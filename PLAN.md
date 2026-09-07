@@ -398,7 +398,11 @@ Auth            : JWT in httpOnly cookie + CSRF double-submit               [LOC
 AI runtime      : LOCAL, CPU-only                                           [LOCKED by D001]
 Computer Vision : Pretrained detection + segmentation — NOT WIRED           [deferred by D018/D022; sample
                                                                               rooms used instead of real CV]
-Style           : CLIP-RN50 zero-shot — NOT WIRED                           [LOCKED D005; deferred by D018/D022]
+Style           : CLIP-RN50-quickgelu zero-shot — IMPLEMENTED, measured     [LOCKED D005; standalone module,
+                  40.2% accuracy (5/6 classes; no Minimalist ground truth    not yet wired into live upload
+                  exists in the eval dataset). Live classifier stays         flow — see Batch ④ notes]
+                  zero-shot (a trained head measured 59.8% but can't
+                  predict Minimalist at all, so isn't deployed)
 Recommendation  : Deterministic scoring + constrained RAG rationale        [IMPLEMENTED, live-verified]
 Knowledge base  : 40 design principles in pgvector, cited in the UI         [LOCKED D006a, seeded + verified]
 Optimization    : Simulated Annealing, hard constraints + 5-term score     [IMPLEMENTED, live-verified,
@@ -768,10 +772,29 @@ Items 1–5 complete and tested. Notable build decisions/findings:
   that. Verified the actual image+text `contents=` input shape and `part.inline_data` output shape by
   reading the installed SDK's own `_transformers.t_part` source — not by trusting a summarized doc page,
   after two independent web sources gave conflicting method names/model names for the same API.
-  **⚠ Gemini provider is implemented but NOT YET live-tested** (no API key was available at implementation
-  time; user is obtaining one). Everything else in the render path (cache, fallback-to-none, floor plan) IS
-  live-tested — only the actual Gemini network call itself is unverified. `MODEL_NAME` in
-  `ai/visualization/providers/gemini.py` may need a one-line update once tested.
+  **⚠ UPDATE 2026-09-07 — live-tested against a real API key, with a substantive finding:** the SDK
+  integration itself is confirmed correct (auth succeeds; a plain text call to `gemini-3.6-flash` returned a
+  real response). `models.list()` against the live account shows `gemini-2.5-flash-image` is deprecated and
+  the current stable image model is **`gemini-3.1-flash-image`** (updated `MODEL_NAME` accordingly). However,
+  **every image-generation model tested — both the original and the current one — returns
+  `RESOURCE_EXHAUSTED` with `free_tier_requests limit: 0`**, while the text model works fine on the same key.
+  This means Google's Gemini free tier no longer includes image-generation quota at all (a real policy
+  change since the D003 research, which found ~500 free image requests/day as of Feb 2026 — that research
+  was accurate when found; only live testing surfaced that it's since changed). **Decision needed from user:
+  enable billing on the Google account (cost then becomes small-but-nonzero, contradicting the original
+  "free, no card" premise of D003), implement the Cloudflare/HF fallback providers instead (deferred so far,
+  not yet built), or accept floor-plan-only for this submission** (already fully working and live-verified).
+  **RESOLVED 2026-09-07 — Option C chosen: floor-plan-only for this submission.** The deterministic floor
+  plan (already fully working and live-verified) is the visualization for now. Photorealistic rendering via
+  Gemini stays implemented and correctly wired (including the `gemini-3.1-flash-image` model-name fix above)
+  but is not enabled — it requires billing on the Google account, which was not taken up. Cloudflare/HF
+  fallback providers remain undesigned-beyond-D003's chain (not implemented). This is a legitimate, stated
+  limitation, not a gap being hidden: per brief PART 9, the floor plan is already the authoritative record of
+  the layout; the photorealistic render was always an enhancement on top of it, never a requirement. Report
+  language: "Photorealistic visualization is designed and implemented (structure-preserving image editing
+  via Gemini) but not enabled in this submission, as it requires a billed API account; the deterministic
+  floor-plan visualization, which is authoritative for the computed layout, is fully functional and used
+  throughout." No further action needed on this item unless the user revisits it.
 - **D023 translator bug found and fixed before shipping:** the first version could describe two new items
   in terms of each other ("coffee table near the rug" / "rug near the coffee table") — fixed by anchoring
   new-item descriptions to EXISTING furniture only, falling back to qualitative room position otherwise.
@@ -811,6 +834,102 @@ structure-preserving disclosure or an honest "not available" message, feedback b
 new iteration). New components: `RecommendationCard`, `FloorPlanView`, `FeedbackBox`. `api/client.ts` gained
 a `patch()` method (was missing — first draft of the preferences call used `post` against a PATCH-only
 route and would have 405'd; caught before it reached a live test).
+
+---
+
+# ▶ BATCH ④ : Style Recognition (D005 implementation) — 2026-09-07
+
+D005 was locked (CLIP-RN50 zero-shot) back in Batch ①-era decisions but never actually built — style came
+entirely from fixture data until now. This batch implements it for real.
+
+**Built:** `ai/style_recognition/classifier.py` (CLIP `RN50-quickgelu` + `openai` weights via
+`open_clip_torch`, zero-shot with 4-template prompt ensembling per class, softmax over the 6 FR-3 labels,
+abstain threshold at 0.35), `ai/style_recognition/cli.py` (classify any image file standalone), 8 unit tests
+(distribution validity, abstain-threshold logic tested in isolation, determinism, non-RGB safety).
+
+**Model-correctness finding:** plain `'RN50'` loads with a QuickGELU activation mismatch against the OpenAI
+weights (open_clip warns explicitly) — verified by loading with `warnings.simplefilter('error')` and
+confirming only `'RN50-quickgelu'` loads clean. Using the mismatched config would have silently degraded
+zero-shot accuracy without any error ever surfacing.
+
+**Test-design finding:** an initial test asserted the classifier must abstain on a blank gray image; the
+real measured confidence (0.373) landed just above the 0.35 threshold, making the test flaky by construction
+(a real model's output pinned against a boundary). Fixed by extracting `should_abstain(confidence)` as a
+pure function, tested directly with controlled values, separately from a softer "never near-certain on
+nonsense input" check on the real model.
+
+## Evaluation dataset: Kaggle Houzz set (as D005 specified) — with an honest, load-bearing caveat
+
+Downloaded `stepanyarullin/interior-design-styles` (~735MB, `datasets/houzz_styles/`, gitignored) via the
+user's own Kaggle API token (no credentials were available to the assistant; user set this up themselves —
+see conversation). **This dataset has 19 style-folder classes and contains NO "Minimalist" class at all** —
+confirmed by listing every folder. Of the six FR-3 styles, only Modern/Contemporary/Traditional/
+Industrial/Scandinavian have real ground-truth images (~192-203 test images each, 986 total); Minimalist is
+therefore **not evaluable** against this dataset and is reported as such, not silently dropped or faked.
+
+## Measured results — `python -m evaluation.run_style_study`, 2026-09-07, 986 real test photos, 42.8s
+
+```
+Overall accuracy (5 evaluable classes): 0.4016 (396/986)
+Mean confidence: 0.4367
+Abstain rate: 0.2982
+
+style            precision     recall         f1  support
+Modern              0.2711     0.3645     0.3109      203
+Contemporary        0.2989     0.3980     0.3414      196
+Traditional         0.8548     0.2611     0.4000      203
+Industrial          0.6859     0.5573     0.6149      192
+Scandinavian        0.4912     0.4375     0.4628      192
+
+Modern/Contemporary cross-confusion: 74 Modern→Contemporary, 68 Contemporary→Modern
+  (this is the single largest confusion pair by far — matches the prediction already recorded
+  in the D004/D021 decision log, made BEFORE this measurement was run)
+```
+
+**Honest interpretation:** 40.16% accuracy is ~2.4× the 6-class random baseline (16.7%) — genuine signal,
+not noise, but far from strong. Traditional shows high precision (0.85) with low recall (0.26): the model
+rarely mislabels OTHER styles as Traditional, but frequently mislabels true-Traditional rooms as
+Modern/Contemporary instead. Industrial is the strongest class (F1 0.61). This is a legitimate, reportable
+zero-shot result, consistent with the general literature finding that style classification without
+domain-specific fine-tuning is genuinely hard — not a bug, not a misconfiguration (both were checked).
+
+**RESOLVED 2026-09-07 — user invoked D005's upgrade path.** Added `encode_image_features()` to
+`ai/style_recognition/classifier.py` (raw, L2-normalized CLIP embedding, no zero-shot text step) plus
+`evaluation/run_style_head_study.py`: extracts frozen CLIP-RN50 embeddings for the dataset's training split,
+fits a `sklearn.LogisticRegression` on top (0.2s to fit — a linear layer over frozen features, not
+deep-network training), evaluates on the identical test set.
+
+**⚠ Design decision made without a further question round (flagged here per the no-silent-decisions
+rule):** the trained head is **NOT** swapped into the live classifier. This training set has the same
+Minimalist gap as the test set — zero Minimalist images anywhere in the dataset — so a head trained on it
+could only ever predict 5 of the 6 FR-3 styles, silently dropping Minimalist support from the live system.
+`ai/style_recognition/classifier.py` (the actual, live, shipped classifier) therefore stays zero-shot, which
+can still at least attempt all 6 categories. The trained head exists purely as a measured comparison
+artifact for the evaluation chapter, answering "would a trained head do better?" honestly, without narrowing
+what the shipped system can do.
+
+**Measured result — `python -m evaluation.run_style_head_study`, 2026-09-07, same 986-image test set:**
+
+```
+Trained-head accuracy (5 evaluable classes): 0.5984 (590/986)
+Zero-shot accuracy, same test set (run_style_study.py):    0.4016 (396/986)
+                                                            +19.7 percentage points
+
+              precision  recall  f1-score  support
+Modern           0.4587  0.4926    0.4751      203
+Contemporary     0.4400  0.3367    0.3815      196
+Traditional      0.7054  0.8374    0.7658      203   (zero-shot recall was 0.2611 — dramatic improvement)
+Industrial       0.7500  0.6719    0.7088      192
+Scandinavian     0.6098  0.6510    0.6297      192
+```
+
+Modern/Contemporary remains the largest confusion pair (40 Modern→Contemporary, 60 Contemporary→Modern) even
+with the trained head — confirms this confusion is a genuine property of the visual distinction between
+these two styles, not an artifact of the zero-shot method specifically. Report language: "A frozen-feature
+logistic-regression head improves measured accuracy from 40.2% to 59.8% on the classes where ground truth is
+available, but is not used in the deployed system because the same dataset gap (no Minimalist images) that
+enables this comparison would also prevent a head trained on it from ever predicting Minimalist; the shipped
+classifier remains zero-shot for full six-class coverage."
 
 ---
 

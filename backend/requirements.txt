@@ -35,3 +35,7 @@ sentence-transformers==3.1.1
 
 # --- Batch 3: generative visualization (D003/D023) ---
 google-genai==2.22.0
+
+# --- Batch 4: style recognition (D005) — CPU-only zero-shot, no training ---
+open_clip_torch==3.3.0
+scikit-learn==1.9.0

@@ -14,12 +14,16 @@ method names and model naming across sources). Confirmed from source:
   - `types.GenerateContentConfig(response_modalities=["IMAGE"])` is a real,
     current field (response_modalities: list[str]).
 
-⚠ NOT YET LIVE-TESTED end-to-end against the real API (no key was available
-during initial development — see PLAN.md D003/D023 build notes). The model
-name below (MODEL_NAME) is the one confirmed to exist during D003's
-research; it or the config shape may need a one-line adjustment once
-tested against a real account — if so, update MODEL_NAME here, not the
-calling code.
+⚠ LIVE-TESTED 2026-09-07 against a real API key — see PLAN.md Batch ③ update. The SDK call shape, auth, and
+response parsing are all CONFIRMED CORRECT (a text-model call on the same key/account succeeded, and the
+image-model calls returned a well-formed structured error, not a client-side failure). `MODEL_NAME` was
+updated from the deprecated `gemini-2.5-flash-image` to the current `gemini-3.1-flash-image`, confirmed via
+`client.models.list()` against the live account. However, every image-generation model on this account
+currently returns `RESOURCE_EXHAUSTED` with a free-tier limit of 0 — Google's free tier no longer appears to
+include any image-generation quota (a policy change since D003 was researched). This provider will work
+once billing is enabled on the account, or once quota is otherwise granted; until then it will always raise
+RenderUnavailableError, which is the correct, honest behavior — see PLAN.md for the pending user decision on
+how to proceed (enable billing / build the Cloudflare-HF fallback / accept floor-plan-only).
 """
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ from PIL import Image
 
 from ai.visualization.providers.base import RenderProvider, RenderUnavailableError
 
-MODEL_NAME = "gemini-2.5-flash-image"
+MODEL_NAME = "gemini-3.1-flash-image"
 
 
 class GeminiImageProvider(RenderProvider):
