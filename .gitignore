@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Node / frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- Data & models (never commit real datasets, weights, or user uploads) ---
+datasets/*
+!datasets/.gitkeep
+models/*
+!models/.gitkeep
+uploads/*
+!uploads/.gitkeep
+generated/*
+!generated/.gitkeep
+
+# --- Logs ---
+*.log
+
+# --- OS ---
+.DS_Store
+
+# --- IDE ---
+.vscode/
+.idea/

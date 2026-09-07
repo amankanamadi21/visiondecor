@@ -1,0 +1,37 @@
+# VisionDecor backend — Batch 1 (backend foundation) dependencies.
+# AI-stage dependencies (ultralytics, torch, clip, etc.) are added when Batch 2 is built.
+
+# --- Web framework (D012) ---
+Flask==3.0.3
+Flask-Cors==4.0.1
+
+# --- Database (D013) ---
+SQLAlchemy==2.0.35
+psycopg2-binary==2.9.9
+alembic==1.13.3
+pgvector==0.3.4
+
+# --- Auth (D014) ---
+PyJWT==2.9.0
+argon2-cffi==23.1.0
+
+# --- Validation / config ---
+pydantic==2.9.2
+python-dotenv==1.0.1
+python-magic==0.4.27
+
+# --- Images ---
+Pillow==10.4.0
+
+# --- Testing ---
+pytest==8.3.3
+pytest-cov==5.0.0
+
+# --- Dev ---
+faker==29.0.0
+
+# --- Batch 2: RAG embeddings (D006a) — CPU-only inference, no training ---
+sentence-transformers==3.1.1
+
+# --- Batch 3: generative visualization (D003/D023) ---
+google-genai==2.22.0
