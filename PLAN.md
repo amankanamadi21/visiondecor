@@ -1316,6 +1316,74 @@ the wrong instinct — the recheck is what actually established which side the b
 Dashboard, compare page, and the logout/login round-trip all rendered and behaved correctly — no other
 findings. `tsc --noEmit` clean, `npm run build` succeeds, `oxlint` unchanged (same 2 pre-existing warnings).
 
+## README overhaul, shareable-link decision, and user-confirmed real geometry — 2026-09-08
+
+**README.md rewritten.** It hadn't been touched since 2026-09-07 and still described "Batch 1 —
+Backend Foundation" with `NotImplementedError` stubs — zero mentions of Cloudflare, real detection/
+segmentation, the mAP study, PDF export, or the area-only reservation, all real and built since.
+Since this is a public repo, a stale README is a real risk, not just an inconvenience. Rewritten to
+describe the actual current system; also caught and fixed a genuine setup gap along the way —
+`scripts/seed_principles.py` (needed for any RAG-cited rationale to work at all) was missing from
+"First-time setup" entirely. Every documented command was re-run against the real repo to confirm
+it still works, not just written from memory.
+
+**Shareable public link: decided against, not silently skipped.** Offered as the other half of
+FR-10 with its own real questions (revocable vs. permanent, what data is safe to expose). The user
+pushed back: PDF export already covers "share a design with someone" reasonably well, and a public
+URL adds a genuinely new privacy/security surface (guessable tokens, no revocation story yet, a
+link that outlives the intent to share it) for a use case that's already served. Recorded here so
+it reads as a considered decision later, not an abandoned TODO.
+
+**User-confirmed real geometry** — the flagged follow-up to "area-only reservation" (PLAN.md,
+previous entry), now built. Decision (explicit, before code): optional, from the results page —
+inserted into the upload wizard would add friction to every real-photo upload including ones where
+precise placement is never wanted.
+
+A second honesty gap surfaced while designing this, before writing code: confirming just width/
+depth (the original framing offered to the user) still leaves POSITION unmeasured — the actual
+point of "letting the floor plan show where existing furniture is." Rather than fabricate a
+position or silently narrow the feature to "confirm size only," the scope was extended to also
+collect height (needed for the layout optimizer's real tall-item/window-clearance constraint — an
+existing item faked at height_cm=0 would silently defeat that constraint) and a clicked position on
+a to-scale room outline. Both are small, honest extensions of an already-approved decision, not a
+new fork requiring another round of sign-off.
+
+**Built:**
+- `detected_objects.confirmed_width_cm/depth_cm/height_cm/x_cm/y_cm/rotation_deg` (migration
+  `b626eb003f26`) — all-or-nothing; only a `REAL_DETECTION` row with a mapped category
+  (chair/couch/bed/table) and confidence above the same 0.35 operating threshold can be confirmed
+  (`ai/room_analysis/db_adapter.py`'s `confirm_detected_object_geometry`,
+  `UnconfirmableDetectionError` otherwise).
+- `load_room_model_from_db` now includes a CONFIRMED `REAL_DETECTION` row as a genuinely positioned
+  `existing_furniture` object — the one path by which real CV output ever becomes one, because
+  every number came from the user, not the pixel bbox. Unconfirmed rows are unaffected (still
+  display + area-only reservation, exactly as before).
+- Confirming recomputes `free_space_ratio`, excluding the now-confirmed item from the reservation
+  (it's precisely accounted for via placement instead — a test guards against double-counting it).
+- `PATCH /api/sessions/<id>/detected-objects/<id>/geometry` — validates dimension sanity bounds
+  (5–400cm, catching unit mistakes), rotation ∈ {0,90,180,270}, and that the item's footprint
+  actually fits inside the room at the given position; ownership-checked like every other route.
+- Frontend: `ConfirmGeometryForm` — width/depth/height inputs, a rotate button, and a click-to-place
+  SVG room outline (to scale, using the room's real cm dimensions) with a live placement preview.
+  `DetectedObjectsPanel` gained an "Add real dimensions" affordance per confirmable item, shown only
+  when the panel is used from the results page (`DesignDetailPage`), not the upload wizard —
+  confirming triggers an automatic regenerate (reusing `POST /generate`, no new job-stage plumbing).
+
+**Tests:** 8 new (`tests/test_confirm_geometry.py`) — rejection cases (wrong source, unmapped class,
+low confidence), the confirmed-item-becomes-real-furniture unit test, the double-counting guard, and
+a full live-photo API flow through upload → confirm → regenerate → layout. **120/120 tests passing.**
+
+**Live-verified end-to-end through the real app** (Playwright): uploaded a real photo, confirmed the
+detected couch's geometry via the actual click-to-place UI, watched it automatically regenerate, and
+inspected the resulting floor plan — the couch now appears as a real "Existing / kept" object at the
+clicked position, and the recommendation engine correctly stopped suggesting a new sofa now that a
+real one exists in the room (reusing the same existing-furniture-suppresses-matching-category-need
+behavior already used by fixture rooms). This is the qualitative confirmation no unit test alone
+could give: the whole point of the feature, actually observed.
+
+**What's still NOT solved:** only the 4 already-mapped classes can be confirmed; a shareable public
+link remains a deliberate non-goal (see above), not a gap.
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)

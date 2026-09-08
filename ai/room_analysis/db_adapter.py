@@ -151,9 +151,17 @@ def _estimate_reserved_area_cm2(db: Session, detections: list) -> float:
     the corresponding category as a stand-in for the detected item's actual
     size (see DETECTION_TO_CATALOG_CATEGORY's docstring above for why a
     pixel bounding box can't give us that directly). Classes with no mapped
-    category contribute 0."""
+    category contribute 0. `detections` may be either fresh
+    ai.room_analysis.detection.Detection objects (initial persist) or
+    DetectedObject rows already confirmed/unconfirmed (recompute after a
+    confirmation) — both expose .confidence and .class_label. Any row with
+    confirmed geometry is excluded: it's precisely accounted for as a real
+    positioned object instead (see load_room_model_from_db), so reserving
+    its area here too would double-count it."""
     total = 0.0
     for det in detections:
+        if getattr(det, "confirmed_width_cm", None) is not None:
+            continue
         if det.confidence < RESERVATION_CONFIDENCE_THRESHOLD:
             continue
         category = DETECTION_TO_CATALOG_CATEGORY.get(det.class_label)
@@ -163,6 +171,70 @@ def _estimate_reserved_area_cm2(db: Session, detections: list) -> float:
         if mean_area:
             total += mean_area
     return total
+
+
+def _recompute_free_space_ratio(db: Session, analysis: RoomAnalysis) -> None:
+    """(Re)derives free_space_ratio from every REAL_DETECTION row currently
+    on `analysis` — called at initial persist time and again whenever a
+    detection's geometry is confirmed (confirmed rows drop out of the
+    reservation at that point, see _estimate_reserved_area_cm2)."""
+    if analysis.room_width_cm is None or analysis.room_length_cm is None:
+        return
+    room_area_cm2 = analysis.room_width_cm * analysis.room_length_cm
+    if room_area_cm2 <= 0:
+        return
+    real_detections = [obj for obj in analysis.detected_objects if obj.source == DetectionSource.REAL_DETECTION]
+    reserved_area_cm2 = _estimate_reserved_area_cm2(db, real_detections)
+
+    from ai.recommendation.scoring import DEFAULT_FREE_SPACE_RATIO
+
+    if reserved_area_cm2 > 0:
+        reserved_ratio = reserved_area_cm2 / room_area_cm2
+        analysis.free_space_ratio = max(MIN_FREE_SPACE_RATIO, DEFAULT_FREE_SPACE_RATIO - reserved_ratio)
+    else:
+        analysis.free_space_ratio = None
+
+
+class UnconfirmableDetectionError(ValueError):
+    """Raised when a DetectedObject can't become a positioned existing
+    object — wrong source, unmapped class, or low confidence."""
+
+
+def confirm_detected_object_geometry(
+    db: Session,
+    detected_object: DetectedObject,
+    *,
+    width_cm: float,
+    depth_cm: float,
+    height_cm: float,
+    x_cm: float,
+    y_cm: float,
+    rotation_deg: int,
+) -> None:
+    """The one honest path from a real detection to a positioned existing
+    FurnitureItem (2026-09-08, "optional from the results page" decision):
+    every number here is USER-PROVIDED, not derived from the pixel bbox —
+    that's what makes it safe to place, unlike the raw detection alone.
+    Recomputes free_space_ratio afterward so this item's area-only
+    reservation (if any) doesn't double-count alongside its new placement."""
+    if detected_object.source != DetectionSource.REAL_DETECTION:
+        raise UnconfirmableDetectionError("Only a real furniture detection can be confirmed.")
+    if detected_object.class_label not in DETECTION_TO_CATALOG_CATEGORY:
+        raise UnconfirmableDetectionError(
+            f"{detected_object.class_label!r} has no corresponding catalog category to place it as."
+        )
+    if detected_object.confidence < RESERVATION_CONFIDENCE_THRESHOLD:
+        raise UnconfirmableDetectionError("This detection's confidence is too low to confirm.")
+
+    detected_object.confirmed_width_cm = width_cm
+    detected_object.confirmed_depth_cm = depth_cm
+    detected_object.confirmed_height_cm = height_cm
+    detected_object.confirmed_x_cm = x_cm
+    detected_object.confirmed_y_cm = y_cm
+    detected_object.confirmed_rotation_deg = rotation_deg
+
+    _recompute_free_space_ratio(db, detected_object.analysis)
+    db.commit()
 
 
 def persist_real_cv_detections(db: Session, analysis: RoomAnalysis, image_path: str) -> None:
@@ -217,17 +289,8 @@ def persist_real_cv_detections(db: Session, analysis: RoomAnalysis, image_path: 
             )
         )
 
-    if analysis.room_width_cm is not None and analysis.room_length_cm is not None:
-        reserved_area_cm2 = _estimate_reserved_area_cm2(db, detections)
-        room_area_cm2 = analysis.room_width_cm * analysis.room_length_cm
-        if reserved_area_cm2 > 0 and room_area_cm2 > 0:
-            from ai.recommendation.scoring import DEFAULT_FREE_SPACE_RATIO
-
-            reserved_ratio = reserved_area_cm2 / room_area_cm2
-            analysis.free_space_ratio = max(
-                MIN_FREE_SPACE_RATIO, DEFAULT_FREE_SPACE_RATIO - reserved_ratio
-            )
-
+    db.flush()  # so analysis.detected_objects includes the rows just added
+    _recompute_free_space_ratio(db, analysis)
     db.commit()
 
 
@@ -235,6 +298,21 @@ def load_room_model_from_db(db: Session, analysis: RoomAnalysis, room_type: str)
     openings: list[Opening] = []
     furniture: list[FurnitureItem] = []
     for obj in analysis.detected_objects:
+        if obj.source == DetectionSource.REAL_DETECTION and obj.confirmed_width_cm is not None:
+            # The ONE path by which real CV output becomes a genuinely
+            # positioned existing object — every field here is user-
+            # confirmed (see confirm_detected_object_geometry), not derived
+            # from the pixel bbox, so it's honest in a way the raw detection
+            # never could be on its own.
+            furniture.append(
+                FurnitureItem(
+                    label=obj.class_label, width_cm=obj.confirmed_width_cm, depth_cm=obj.confirmed_depth_cm,
+                    height_cm=obj.confirmed_height_cm, x_cm=obj.confirmed_x_cm, y_cm=obj.confirmed_y_cm,
+                    rotation_deg=obj.confirmed_rotation_deg or 0,
+                    is_existing=True, category=DETECTION_TO_CATALOG_CATEGORY.get(obj.class_label),
+                )
+            )
+            continue
         if obj.source in (DetectionSource.REAL_DETECTION, DetectionSource.REAL_SEGMENTATION):
             # Never fed into existing_furniture/openings — see
             # persist_real_cv_detections for why (no depth information in a

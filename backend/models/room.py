@@ -124,6 +124,21 @@ class DetectedObject(Base):
     )
     area_px: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # 2026-09-08: user-confirmed real geometry (decision, "optional from the
+    # results page"). A pixel bbox alone can never honestly give a real (x,y)
+    # position or exact size (no depth info in a single photo) — these
+    # columns are the ONE path by which a REAL_DETECTION row can become a
+    # genuinely positioned existing-furniture object, because the numbers
+    # here are user-provided, not estimated. All-or-nothing: either every
+    # field is set (confirmed) or none are (still area-only-reservation-only).
+    # See backend/api/geometry.py and ai/room_analysis/db_adapter.py.
+    confirmed_width_cm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confirmed_depth_cm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confirmed_height_cm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confirmed_x_cm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confirmed_y_cm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confirmed_rotation_deg: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     analysis: Mapped["RoomAnalysis"] = relationship(back_populates="detected_objects")
 
     def __repr__(self) -> str:  # pragma: no cover

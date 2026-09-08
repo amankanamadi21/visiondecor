@@ -10,11 +10,14 @@ Two scope decisions apply, both locked with the user:
    once detection quality had actually been measured): confidently-detected
    furniture with a class mapped to a real catalog category reduces the
    room's free_space_ratio, using the catalog's own mean footprint for that
-   category. Nothing detected is ever given a real (x, y) position or exact
-   size — a single 2D photo has no depth information to derive one honestly
-   — so the recommendation numbers can change, but the layout's existing-
-   furniture set stays empty. The tests at the bottom guard exactly that
-   boundary.
+   category. A detection is NEVER given a real (x, y) position or exact size
+   from the pixel bbox alone — a single 2D photo has no depth information to
+   derive one honestly — so by default the layout's existing-furniture set
+   stays empty. The tests at the bottom guard exactly that boundary.
+   (tests/test_confirm_geometry.py covers the one exception: a user can
+   explicitly CONFIRM real geometry for a detection, which then does become
+   a positioned existing object — see ai/room_analysis/db_adapter.py's
+   confirm_detected_object_geometry.)
 
 Unit-level checks run against a real photo from the already-downloaded Houzz
 dataset (datasets/houzz_styles/) — a synthetic solid-color image only proves

@@ -5,7 +5,8 @@ import { RecommendationCard } from "../components/RecommendationCard";
 import { FloorPlanView } from "../components/FloorPlanView";
 import { FeedbackBox } from "../components/FeedbackBox";
 import { DetectedObjectsPanel } from "../components/DetectedObjectsPanel";
-import type { DesignSession, Layout, Recommendation, StyleResult } from "../api/types";
+import { JobProgress } from "../components/JobProgress";
+import type { DesignSession, Job, Layout, Recommendation, StyleResult } from "../api/types";
 
 type LayoutScoreKey = "space_utilization" | "accessibility" | "movement_flow" | "visual_balance" | "functionality";
 const LAYOUT_SCORE_ITEMS: { key: LayoutScoreKey; label: string }[] = [
@@ -24,6 +25,7 @@ export function DesignDetailPage() {
   const [layout, setLayout] = useState<Layout | null>(null);
   const [styleResult, setStyleResult] = useState<StyleResult | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [regeneratingJobId, setRegeneratingJobId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -51,6 +53,20 @@ export function DesignDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  /** A confirmed detection genuinely changes the room model (a real
+   * positioned existing object, or a recomputed free_space_ratio) — so it's
+   * regenerated the same way a feedback-driven refinement is, just without
+   * needing the user to type anything. */
+  async function handleGeometryConfirmed() {
+    const res = await api.post<{ job_id: number }>(`/api/sessions/${sessionId}/generate`);
+    setRegeneratingJobId(res.job_id);
+  }
+
+  function handleRegenerateDone(_job: Job) {
+    setRegeneratingJobId(null);
+    load();
+  }
 
   if (notFound) {
     return (
@@ -102,7 +118,22 @@ export function DesignDetailPage() {
         </div>
       )}
 
-      {styleResult && <DetectedObjectsPanel detected={styleResult.detected_objects} />}
+      {styleResult && (
+        <DetectedObjectsPanel
+          detected={styleResult.detected_objects}
+          sessionId={sessionId}
+          roomWidthCm={styleResult.room_width_cm}
+          roomLengthCm={styleResult.room_length_cm}
+          onGeometryConfirmed={handleGeometryConfirmed}
+        />
+      )}
+
+      {regeneratingJobId !== null && (
+        <div className="wizard-step__honesty-note">
+          <p>Regenerating this design around the confirmed item…</p>
+          <JobProgress jobId={regeneratingJobId} onDone={handleRegenerateDone} />
+        </div>
+      )}
 
       {session.status !== "ready" && (
         <p className="wizard-step__honesty-note">

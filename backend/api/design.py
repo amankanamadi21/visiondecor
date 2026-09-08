@@ -17,10 +17,16 @@ from sqlalchemy import select
 
 from backend.api.sessions import get_owned_session
 from backend.db import get_session
-from backend.errors import not_found
+from backend.errors import not_found, validation_error
 from backend.models.layout import Layout, LayoutObject
 from backend.models.recommendation import Recommendation, RecommendationItem
-from backend.models.room import DetectionSource, RoomAnalysis, RoomImage
+from ai.room_analysis.db_adapter import (
+    DETECTION_TO_CATALOG_CATEGORY,
+    RESERVATION_CONFIDENCE_THRESHOLD,
+    UnconfirmableDetectionError,
+    confirm_detected_object_geometry,
+)
+from backend.models.room import DetectedObject, DetectionSource, RoomAnalysis, RoomImage
 from backend.models.session import JobStage
 from backend.models.visualization import Visualization
 from backend.utils.auth_decorators import login_required
@@ -49,17 +55,40 @@ FURNITURE_SOURCES = (DetectionSource.DETECTION, DetectionSource.REAL_DETECTION)
 ARCHITECTURAL_SOURCES = (DetectionSource.SEGMENTATION, DetectionSource.REAL_SEGMENTATION)
 
 
+def _furniture_dict(obj: DetectedObject) -> dict:
+    can_confirm = (
+        obj.source == DetectionSource.REAL_DETECTION
+        and obj.class_label in DETECTION_TO_CATALOG_CATEGORY
+        and obj.confidence >= RESERVATION_CONFIDENCE_THRESHOLD
+    )
+    return {
+        "id": obj.id,
+        "label": obj.class_label,
+        "confidence": obj.confidence,
+        "can_confirm_geometry": can_confirm,
+        "confirmed": obj.confirmed_width_cm is not None,
+        "confirmed_geometry": (
+            {
+                "width_cm": obj.confirmed_width_cm, "depth_cm": obj.confirmed_depth_cm,
+                "height_cm": obj.confirmed_height_cm, "x_cm": obj.confirmed_x_cm,
+                "y_cm": obj.confirmed_y_cm, "rotation_deg": obj.confirmed_rotation_deg,
+            }
+            if obj.confirmed_width_cm is not None
+            else None
+        ),
+    }
+
+
 def _detected_objects_dict(analysis: RoomAnalysis, is_sample_room: bool) -> dict:
     """Display-only summary of what FR-2's room analysis found — real CV
     output (2026-09-08 batch) for a genuine photo, or the fixture's labeled
     ground truth for a sample room (both already exist as DetectedObject
     rows; this just presents them uniformly). Confidence is always real:
-    1.0 for fixture ground truth, the actual model output for real CV."""
-    furniture = [
-        {"label": obj.class_label, "confidence": obj.confidence}
-        for obj in analysis.detected_objects
-        if obj.source in FURNITURE_SOURCES
-    ]
+    1.0 for fixture ground truth, the actual model output for real CV.
+    `can_confirm_geometry` (2026-09-08) tells the frontend which furniture
+    entries can go through confirm_detected_object_geometry — real,
+    confident detections of a class with a catalog-category match."""
+    furniture = [_furniture_dict(obj) for obj in analysis.detected_objects if obj.source in FURNITURE_SOURCES]
     architectural = [
         {"label": obj.class_label, "confidence": obj.confidence}
         for obj in analysis.detected_objects
@@ -99,9 +128,77 @@ def get_latest_style(session_id: int):
             },
             "is_sample_room": is_sample_room,
             "has_known_dimensions": analysis.room_width_cm is not None and analysis.room_length_cm is not None,
+            "room_width_cm": analysis.room_width_cm,
+            "room_length_cm": analysis.room_length_cm,
             "detected_objects": _detected_objects_dict(analysis, is_sample_room),
         }
     )
+
+
+# Sanity bounds — the same kind used for room dimensions (D004): catch a
+# unit mistake (e.g. meters typed where cm was expected), not a real
+# furniture-size limit.
+MIN_ITEM_DIMENSION_CM = 5.0
+MAX_ITEM_DIMENSION_CM = 400.0
+
+
+@bp.patch("/<int:session_id>/detected-objects/<int:detected_object_id>/geometry")
+@login_required
+def confirm_detected_object(session_id: int, detected_object_id: int):
+    """2026-09-08: "optional, from the results page" decision — lets the
+    user confirm a confident real detection's actual width/depth/height and
+    where it sits in the room, turning it into a genuinely positioned
+    existing object (see ai/room_analysis/db_adapter.py's
+    confirm_detected_object_geometry for why every number here must be
+    user-provided, never derived from the pixel bbox alone)."""
+    db = get_session()
+    get_owned_session(db, session_id, g.user.id)
+
+    analysis = _get_latest_analysis(db, session_id)
+    detected_object = db.get(DetectedObject, detected_object_id)
+    if (
+        analysis is None
+        or detected_object is None
+        or detected_object.analysis_id != analysis.id
+    ):
+        raise not_found("No such detected object for this design.")
+    if analysis.room_width_cm is None or analysis.room_length_cm is None:
+        raise validation_error("This design has no known room dimensions to place an item within.")
+
+    data = request.get_json(silent=True) or {}
+    required_fields = ("width_cm", "depth_cm", "height_cm", "x_cm", "y_cm")
+    for field in required_fields:
+        if not isinstance(data.get(field), (int, float)):
+            raise validation_error(f"{field} is required and must be a number.", {"field": field})
+
+    width_cm, depth_cm, height_cm = data["width_cm"], data["depth_cm"], data["height_cm"]
+    for field, value in (("width_cm", width_cm), ("depth_cm", depth_cm), ("height_cm", height_cm)):
+        if not (MIN_ITEM_DIMENSION_CM <= value <= MAX_ITEM_DIMENSION_CM):
+            raise validation_error(
+                f"{field} must be between {MIN_ITEM_DIMENSION_CM:.0f} and {MAX_ITEM_DIMENSION_CM:.0f} cm.",
+                {"field": field},
+            )
+
+    rotation_deg = data.get("rotation_deg", 0)
+    if rotation_deg not in (0, 90, 180, 270):
+        raise validation_error("rotation_deg must be one of 0, 90, 180, 270.", {"field": "rotation_deg"})
+
+    x_cm, y_cm = data["x_cm"], data["y_cm"]
+    footprint_w, footprint_d = (depth_cm, width_cm) if rotation_deg in (90, 270) else (width_cm, depth_cm)
+    if not (0 <= x_cm - footprint_w / 2 and x_cm + footprint_w / 2 <= analysis.room_width_cm):
+        raise validation_error("This item's footprint doesn't fit within the room's width at that position.", {"field": "x_cm"})
+    if not (0 <= y_cm - footprint_d / 2 and y_cm + footprint_d / 2 <= analysis.room_length_cm):
+        raise validation_error("This item's footprint doesn't fit within the room's length at that position.", {"field": "y_cm"})
+
+    try:
+        confirm_detected_object_geometry(
+            db, detected_object, width_cm=width_cm, depth_cm=depth_cm, height_cm=height_cm,
+            x_cm=x_cm, y_cm=y_cm, rotation_deg=rotation_deg,
+        )
+    except UnconfirmableDetectionError as exc:
+        raise validation_error(str(exc))
+
+    return jsonify({"detected_object": _furniture_dict(detected_object)})
 
 
 @bp.post("/<int:session_id>/generate")

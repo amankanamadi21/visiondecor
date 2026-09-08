@@ -99,13 +99,32 @@ export interface DetectedItem {
   confidence: number;
 }
 
+export interface ConfirmedGeometry {
+  width_cm: number;
+  depth_cm: number;
+  height_cm: number;
+  x_cm: number;
+  y_cm: number;
+  rotation_deg: number;
+}
+
+// A furniture entry additionally carries an id and confirmation state
+// (2026-09-08) so the UI can offer "add real dimensions" — see
+// ai/room_analysis/db_adapter.py's confirm_detected_object_geometry.
+export interface DetectedFurnitureItem extends DetectedItem {
+  id: number;
+  can_confirm_geometry: boolean;
+  confirmed: boolean;
+  confirmed_geometry: ConfirmedGeometry | null;
+}
+
 // 2026-09-08 CV batch (FR-2, Report Issue R-07) — "real_cv" for a genuine
 // photo (pretrained YOLO + ADE20K segmentation; confident furniture here
 // reduces the room's estimated free space, see PLAN.md's "area-only
 // reservation" decision), "fixture_ground_truth" for a recognized sample room.
 export interface DetectedObjects {
   source: "real_cv" | "fixture_ground_truth";
-  furniture: DetectedItem[];
+  furniture: DetectedFurnitureItem[];
   architectural: DetectedItem[];
 }
 
@@ -119,6 +138,8 @@ export interface StyleResult {
   };
   is_sample_room: boolean;
   has_known_dimensions: boolean;
+  room_width_cm: number | null;
+  room_length_cm: number | null;
   detected_objects: DetectedObjects;
 }
 
