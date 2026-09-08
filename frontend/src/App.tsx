@@ -6,6 +6,7 @@ import { RegisterPage } from "./pages/RegisterPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { NewDesignPage } from "./pages/NewDesignPage";
 import { DesignDetailPage } from "./pages/DesignDetailPage";
+import { CompareDesignsPage } from "./pages/CompareDesignsPage";
 import "./App.css";
 
 export default function App() {
@@ -37,6 +38,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <DesignDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/designs/:id/compare"
+            element={
+              <ProtectedRoute>
+                <CompareDesignsPage />
               </ProtectedRoute>
             }
           />

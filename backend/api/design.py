@@ -11,7 +11,7 @@ job fails with a specific, honest error (PipelineStageError
 """
 from __future__ import annotations
 
-from flask import Blueprint, current_app, g, jsonify, send_file
+from flask import Blueprint, current_app, g, jsonify, request, send_file
 
 from sqlalchemy import select
 
@@ -159,18 +159,60 @@ def _layout_object_dict(obj: LayoutObject) -> dict:
     }
 
 
+def _get_recommendation(db, session_id: int, iteration: int | None) -> Recommendation | None:
+    """`iteration=None` means latest — the pre-FR-9 behavior every existing
+    caller (and test) relies on. An explicit iteration is what FR-9 (design
+    comparison) needs: a specific past iteration, not just the newest."""
+    query = db.query(Recommendation).filter_by(session_id=session_id)
+    if iteration is not None:
+        return query.filter_by(iteration=iteration).first()
+    return query.order_by(Recommendation.iteration.desc()).first()
+
+
+@bp.get("/<int:session_id>/iterations")
+@login_required
+def list_iterations(session_id: int):
+    """FR-9 (design comparison): a lightweight summary of every iteration
+    this session has produced, for a comparison picker UI — not the full
+    recommendation/layout payload, just enough to choose two to compare."""
+    db = get_session()
+    get_owned_session(db, session_id, g.user.id)
+
+    recommendations = (
+        db.query(Recommendation)
+        .filter_by(session_id=session_id)
+        .order_by(Recommendation.iteration.asc())
+        .all()
+    )
+    summaries = []
+    for rec in recommendations:
+        layout = (
+            db.query(Layout)
+            .filter_by(recommendation_id=rec.id)
+            .order_by(Layout.created_at.desc())
+            .first()
+        )
+        summaries.append(
+            {
+                "iteration": rec.iteration,
+                "created_at": rec.created_at.isoformat(),
+                "total_cost": float(rec.total_cost),
+                "within_budget": rec.within_budget,
+                "layout_score": layout.layout_score if layout else None,
+                "item_count": len(rec.items),
+            }
+        )
+    return jsonify({"iterations": summaries})
+
+
 @bp.get("/<int:session_id>/recommendation")
 @login_required
 def get_latest_recommendation(session_id: int):
     db = get_session()
     get_owned_session(db, session_id, g.user.id)
 
-    rec = (
-        db.query(Recommendation)
-        .filter_by(session_id=session_id)
-        .order_by(Recommendation.iteration.desc())
-        .first()
-    )
+    iteration = request.args.get("iteration", type=int)
+    rec = _get_recommendation(db, session_id, iteration)
     if rec is None:
         raise not_found("No recommendation has been generated for this design yet.")
     payload = _recommendation_dict(rec)
@@ -184,12 +226,8 @@ def get_latest_layout(session_id: int):
     db = get_session()
     get_owned_session(db, session_id, g.user.id)
 
-    rec = (
-        db.query(Recommendation)
-        .filter_by(session_id=session_id)
-        .order_by(Recommendation.iteration.desc())
-        .first()
-    )
+    iteration = request.args.get("iteration", type=int)
+    rec = _get_recommendation(db, session_id, iteration)
     layout = None
     if rec is not None:
         layout = (

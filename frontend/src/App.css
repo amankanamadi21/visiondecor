@@ -292,3 +292,48 @@ a { color: var(--vd-accent-dark); }
 }
 .room-dimensions-input label { flex: 1; max-width: 180px; }
 .room-dimensions-input input { max-width: 100%; }
+
+/* --- FR-9: design comparison --- */
+
+.compare-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+}
+.compare-column {
+  background: var(--vd-surface);
+  border: 1px solid var(--vd-border);
+  border-radius: 10px;
+  padding: 1rem;
+}
+.compare-column__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.8rem;
+  gap: 0.6rem;
+}
+.compare-column__header select {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--vd-border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.compare-item-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.8rem 0;
+  font-size: 0.85rem;
+}
+.compare-item-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--vd-border);
+}
+
+@media (max-width: 720px) {
+  .compare-columns { grid-template-columns: 1fr; }
+}

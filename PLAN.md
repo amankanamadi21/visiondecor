@@ -1001,6 +1001,38 @@ rejection, sample-room precedence). **92/92 tests passing.**
 **What's still NOT solved:** existing-furniture detection for real photos (still deferred, D018/D022) — a
 real uploaded room is always treated as empty, disclosed honestly in the UI, never silently assumed.
 
+## FR-9: Design comparison — 2026-09-08
+
+Report explicitly wants users able to compare design alternatives (brief PART 2/PART 36). No new
+architectural decision needed — every feedback-driven refinement already creates a new `Recommendation`/
+`Layout` row under an incrementing `iteration`; this just exposes that.
+
+**Backend:** `GET /api/sessions/<id>/iterations` — lightweight summary of every iteration (iteration number,
+cost, budget compliance, layout score, item count) for a comparison picker. `GET /recommendation` and
+`GET /layout` gained an optional `?iteration=N` query param (both endpoints refactored through a shared
+`_get_recommendation` helper); omitted, behavior is unchanged (latest) — verified backward-compatible, all
+prior tests still pass untouched.
+
+**Frontend:** new `CompareDesignsPage` (`/designs/:id/compare`) — two independent columns, each with its own
+iteration dropdown, rendering budget/layout-score summary, a compact item list, and the floor plan side by
+side. Linked from `DesignDetailPage` once a session has more than one iteration.
+
+**Test-design finding:** the first version of the comparison test used a style-shifting feedback
+("make it more industrial") on the small bedroom fixture, which hit a genuine, deterministic
+`LayoutInfeasibleError` — Industrial's bulkier bed didn't fit alongside the existing wardrobe in a
+300×350cm room. Real, honest system behavior, but not what the test was trying to exercise. Fixed by
+switching to the larger living-room fixture and a budget-only feedback ("reduce cost"), and by asserting on
+`budget` (a guaranteed, deterministic -15% signal from `feedback_service.py`) rather than assuming the item
+set must differ — a budget cut doesn't necessarily displace an already-affordable item, which is itself
+correct behavior, observed live (iteration 1 and 2 legitimately picked identical items once, because they
+were already comfortably under the reduced budget).
+
+**Live-verified** end-to-end against the real server: created a session, generated iteration 1 (budget
+80000), submitted "reduce cost please" to create iteration 2 (budget correctly 68000 = 80000×0.85), fetched
+`/iterations` (both listed correctly), then fetched iteration 1 and iteration 2 explicitly via `?iteration=`
+and confirmed each returned its own distinct data, with the no-param default correctly returning latest.
+4 new backend tests. **96/96 tests passing.**
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)

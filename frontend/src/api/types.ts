@@ -132,6 +132,15 @@ export interface Layout {
   visualization: VisualizationInfo | null;
 }
 
+export interface IterationSummary {
+  iteration: number;
+  created_at: string;
+  total_cost: number;
+  within_budget: boolean;
+  layout_score: number | null;
+  item_count: number;
+}
+
 export interface FeedbackEntry {
   id: number;
   raw_text: string;

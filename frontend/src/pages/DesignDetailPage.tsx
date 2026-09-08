@@ -104,6 +104,12 @@ export function DesignDetailPage() {
             </strong>
             {" · iteration "}
             {recommendation.iteration}
+            {recommendation.iteration > 1 && (
+              <>
+                {" · "}
+                <Link to={`/designs/${sessionId}/compare`}>Compare with a previous iteration</Link>
+              </>
+            )}
           </p>
           <div className="recommendation-list">
             {recommendation.items.map((item) => (
