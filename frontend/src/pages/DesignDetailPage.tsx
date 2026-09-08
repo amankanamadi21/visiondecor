@@ -79,6 +79,13 @@ export function DesignDetailPage() {
         </div>
       )}
 
+      {!isSampleRoom && recommendation && (
+        <div className="sample-room-badge">
+          Real photo, user-provided dimensions (decision D004) — style recognition is real, but since
+          existing-furniture detection isn't implemented yet, this design assumes the room is empty.
+        </div>
+      )}
+
       {session.status !== "ready" && (
         <p className="wizard-step__honesty-note">
           No design has been generated for this session yet.{" "}

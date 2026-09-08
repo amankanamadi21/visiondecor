@@ -11,11 +11,14 @@ sample-room images, its corresponding fixture RoomAnalysis is auto-attached
 (decision D022) — recognition of a known, fixed set of demo images, not
 general room analysis.
 
-Style recognition (D005), however, IS real and IS triggered here for any
-genuine, unrecognized photo — see run_style_recognition_for_upload. It
-produces a real prediction but no room dimensions (D004 remains open), so
-full recommendation generation still isn't available for a real photo;
-`run_generate_design` reports that honestly via `room_dimensions_missing`.
+Style recognition (D005) IS real and IS triggered here for any genuine,
+unrecognized photo — see run_style_recognition_for_upload. Optional
+`room_width_cm`/`room_length_cm` form fields (D004, locked 2026-09-08:
+user-provided dimensions) let a real photo unlock full recommendation
+generation too, not just a style prediction — stamped
+`scale_source=USER_PROVIDED`. Without them, dimensions stay unknown and
+`run_generate_design` reports that honestly via `room_dimensions_missing`
+rather than guessing.
 """
 from __future__ import annotations
 
@@ -34,6 +37,25 @@ from backend.utils.auth_decorators import login_required
 
 bp = Blueprint("uploads", __name__, url_prefix="/api/sessions")
 
+MIN_ROOM_DIMENSION_CM = 50.0
+MAX_ROOM_DIMENSION_CM = 3000.0
+
+
+def _parse_optional_room_dimension(form, field_name: str) -> float | None:
+    raw = form.get(field_name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        raise validation_error(f"{field_name} must be a number.", {"field": field_name})
+    if not (MIN_ROOM_DIMENSION_CM <= value <= MAX_ROOM_DIMENSION_CM):
+        raise validation_error(
+            f"{field_name} must be between {MIN_ROOM_DIMENSION_CM:.0f} and {MAX_ROOM_DIMENSION_CM:.0f} cm.",
+            {"field": field_name},
+        )
+    return value
+
 
 @bp.post("/<int:session_id>/image")
 @login_required
@@ -50,6 +72,16 @@ def upload_room_image(session_id: int):
     validated = validate_and_clean_image(
         raw_bytes, config.MAX_UPLOAD_SIZE_MB, config.ALLOWED_IMAGE_TYPES
     )
+
+    # D004: optional, user-provided room dimensions for a genuine (non-sample)
+    # photo. Both-or-neither — a single dimension alone can't be used (D021's
+    # space_utilization term needs a real floor area, not a partial guess).
+    room_width_cm = _parse_optional_room_dimension(request.form, "room_width_cm")
+    room_length_cm = _parse_optional_room_dimension(request.form, "room_length_cm")
+    if (room_width_cm is None) != (room_length_cm is None):
+        raise validation_error(
+            "Provide both room_width_cm and room_length_cm, or neither.", {"field": "room_width_cm"}
+        )
 
     user_dir = os.path.join(config.UPLOAD_DIR, str(g.user.id), str(session_id))
     os.makedirs(user_dir, exist_ok=True)
@@ -124,6 +156,7 @@ def upload_room_image(session_id: int):
             run_style_recognition_for_upload(
                 job_id, report_progress, room_image_id=room_image.id, image_path=original_path,
                 session_factory=lambda: SASession(get_engine()),
+                room_width_cm=room_width_cm, room_length_cm=room_length_cm,
             )
 
         style_job_id = job_runner.submit(session_id, JobStage.STYLE_RECOGNITION, _style_work)

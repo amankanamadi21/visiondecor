@@ -57,6 +57,9 @@ export function NewDesignPage() {
   const [roomType, setRoomType] = useState<RoomType | "">("");
   const [session, setSession] = useState<DesignSession | null>(null);
   const [isSampleRoom, setIsSampleRoom] = useState(false);
+  const [hasKnownDimensions, setHasKnownDimensions] = useState(false);
+  const [roomWidthCm, setRoomWidthCm] = useState("");
+  const [roomLengthCm, setRoomLengthCm] = useState("");
   const [jobId, setJobId] = useState<number | null>(null);
   const [preferredStyle, setPreferredStyle] = useState<Style | "">("");
   const [colorsText, setColorsText] = useState("");
@@ -80,18 +83,27 @@ export function NewDesignPage() {
     }
   }
 
-  async function uploadImage(fileToUpload: File) {
+  async function uploadImage(fileToUpload: File, dimensions?: { width: string; length: string }) {
     if (!session) return;
     setError(null);
     setSubmitting(true);
     try {
       const formData = new FormData();
       formData.append("image", fileToUpload);
-      const res = await api.postForm<{ room_image: RoomImage; is_sample_room: boolean; job_id: number }>(
-        `/api/sessions/${session.id}/image`,
-        formData
-      );
+      // D004 (locked 2026-09-08): both-or-neither — a single dimension can't
+      // be used, and the backend rejects a lone one anyway.
+      if (dimensions?.width && dimensions?.length) {
+        formData.append("room_width_cm", dimensions.width);
+        formData.append("room_length_cm", dimensions.length);
+      }
+      const res = await api.postForm<{
+        room_image: RoomImage;
+        is_sample_room: boolean;
+        job_id: number;
+        style_job_id: number | null;
+      }>(`/api/sessions/${session.id}/image`, formData);
       setIsSampleRoom(res.is_sample_room);
+      setHasKnownDimensions(res.is_sample_room || Boolean(dimensions?.width && dimensions?.length));
       setJobId(res.job_id);
       setStep("processing");
     } catch (err) {
@@ -103,14 +115,14 @@ export function NewDesignPage() {
 
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
     const chosen = e.target.files?.[0] ?? null;
-    if (chosen) uploadImage(chosen);
+    if (chosen) uploadImage(chosen, { width: roomWidthCm, length: roomLengthCm });
   }
 
   async function handleUseSample(sampleFile: string) {
     const res = await fetch(`/samples/${sampleFile}.jpg`);
     const blob = await res.blob();
     const sampleAsFile = new File([blob], `${sampleFile}.jpg`, { type: "image/jpeg" });
-    uploadImage(sampleAsFile);
+    uploadImage(sampleAsFile); // dimensions never sent for samples — the fixture's own always win
   }
 
   function handlePreprocessDone(_job: Job) {
@@ -187,10 +199,11 @@ export function NewDesignPage() {
           <h2>Step 2 — Choose a room photo</h2>
 
           <div className="wizard-step__honesty-note">
-            <strong>Real photo analysis isn't available in this build yet.</strong> Choose one of the sample
-            rooms below to see the complete recommendation, layout, and visualization pipeline. You can
-            still upload your own photo — it will be stored and preprocessed, but recommendations require a
-            sample room until room analysis is implemented.
+            <strong>Automatic furniture/style detection from a real photo isn't available in this build.</strong>{" "}
+            Sample rooms below show the complete pipeline including existing-furniture detection. If you
+            upload your own photo instead, style recognition still runs for real — but since we can't detect
+            existing furniture yet, tell us your room's size and we'll treat it as empty and recommend
+            everything needed for it.
           </div>
 
           <h3>Sample rooms</h3>
@@ -211,6 +224,34 @@ export function NewDesignPage() {
           </div>
 
           <h3>Or upload your own photo</h3>
+          <div className="room-dimensions-input">
+            <label>
+              Room width (cm)
+              <input
+                type="number"
+                min={50}
+                max={3000}
+                value={roomWidthCm}
+                onChange={(e) => setRoomWidthCm(e.target.value)}
+                placeholder="e.g. 400"
+              />
+            </label>
+            <label>
+              Room length (cm)
+              <input
+                type="number"
+                min={50}
+                max={3000}
+                value={roomLengthCm}
+                onChange={(e) => setRoomLengthCm(e.target.value)}
+                placeholder="e.g. 500"
+              />
+            </label>
+          </div>
+          <p className="wizard-step__hint">
+            Optional — but without both, you'll get a real style prediction and nothing else, since a layout
+            can't be computed without knowing the room's size.
+          </p>
           <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleFileChange} />
         </div>
       )}
@@ -228,11 +269,17 @@ export function NewDesignPage() {
       {step === "preferences" && (
         <form onSubmit={handleGenerate} className="wizard-step">
           <h2>Step 3 — Your preferences</h2>
-          {!isSampleRoom && (
+          {!isSampleRoom && !hasKnownDimensions && (
             <div className="wizard-step__honesty-note">
-              This photo wasn't recognized as a sample room, so generating a design will fail with a clear
-              message (real room analysis isn't implemented yet) — go back and pick a sample room to see the
-              full pipeline.
+              No room dimensions were provided, so generating a design will fail with a clear message —
+              you'll still see a real style prediction on the results page. Go back and enter dimensions, or
+              pick a sample room, to see the full pipeline.
+            </div>
+          )}
+          {!isSampleRoom && hasKnownDimensions && (
+            <div className="wizard-step__honesty-note">
+              Since we can't detect existing furniture in your photo yet, this design will assume the room is
+              empty and recommend furniture for everything it needs.
             </div>
           )}
           <label>

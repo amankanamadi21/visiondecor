@@ -396,14 +396,18 @@ Backend         : Flask, app factory, thread-based JobRunner                [LOC
 Database        : PostgreSQL 16 + pgvector, 16 tables + prefs columns       [LOCKED, Batch 1, extended Batch 2]
 Auth            : JWT in httpOnly cookie + CSRF double-submit               [LOCKED, Batch 1]
 AI runtime      : LOCAL, CPU-only                                           [LOCKED by D001]
-Computer Vision : Pretrained detection + segmentation — NOT WIRED           [deferred by D018/D022; sample
-                                                                              rooms used instead of real CV]
+Computer Vision : Pretrained detection + segmentation — NOT WIRED           [deferred by D018/D022; real
+                  (existing-furniture detection only — room dimensions       photos always treated as empty,
+                  are now solved for real photos, see D004 below)            disclosed honestly in the UI]
 Style           : CLIP-RN50-quickgelu zero-shot — LIVE-WIRED, measured      [LOCKED D005; runs for real on
                   40.2% accuracy (5/6 classes; no Minimalist ground truth     every genuine photo upload, not
-                  exists in the eval dataset). Live classifier stays         just a standalone module — see
-                  zero-shot (a trained head measured 59.8% but can't          Batch ④ notes. Full
-                  predict Minimalist at all, so isn't deployed)              recommendation for real photos
-                                                                              still blocked on D004]
+                  exists in the eval dataset). Live classifier stays         just a standalone module]
+                  zero-shot (a trained head measured 59.8% but can't
+                  predict Minimalist at all, so isn't deployed)
+Room dimensions : User-provided (D004, LOCKED 2026-09-08) — width/length     [Unlocks full recommendation +
+                  form fields for a real photo, scale_source=USER_PROVIDED.  layout for real photos, not just
+                  Live-verified end-to-end: real photo -> real style ->      style — see D004 resolution notes]
+                  real recommendation -> real layout, all constraints met
 Recommendation  : Deterministic scoring + constrained RAG rationale        [IMPLEMENTED, live-verified]
 Knowledge base  : 40 design principles in pgvector, cited in the UI         [LOCKED D006a, seeded + verified]
 Optimization    : Simulated Annealing, hard constraints + 5-term score     [IMPLEMENTED, live-verified,
@@ -964,7 +968,38 @@ the actual running server, confirmed `style_job_id` present, polled it to comple
 genuinely uninformative test image — exactly brief PART 4's intended behavior), then confirmed `generate`
 fails with `room_dimensions_missing` end-to-end. 4 new integration tests
 (`tests/test_style_recognition_upload.py`) plus 1 existing test updated to match the new, more specific
-error code. **87/87 tests passing.**
+error code. 87/87 tests passing at this point.
+
+## D004 (room dimension strategy) — RESOLVED 2026-09-08: user-provided dimensions
+
+The `room_dimensions_missing` gap above was intentionally left open in the same session — user chose to
+close it immediately after. **Locked: Option A, user-provided dimensions** — explicitly sanctioned by the
+report's own PART 3 wording ("...the system must clearly distinguish between measured / estimated /
+user-provided values"). Rejected: monocular depth estimation (real effort for a method that fundamentally
+cannot recover absolute metric scale from one uncalibrated photo — a genuine CV limitation, not a
+workable-around implementation detail) and reference-object anchoring (blocked by the same deferred
+detection work as D018).
+
+**What changed:** `POST /api/sessions/<id>/image` accepts optional `room_width_cm`/`room_length_cm` form
+fields (both-or-neither, validated to 50–3000cm — catches unit mistakes like entering meters). When
+provided for a genuine (non-sample) photo, `run_style_recognition_for_upload` stamps the RoomAnalysis
+`scale_source=USER_PROVIDED` with real dimensions instead of `UNKNOWN`/`NULL`, which **unlocks full
+recommendation + layout generation for a real uploaded photo** — not just a style prediction. Sample rooms
+silently ignore any provided dimensions (fixture's own real ones always win, matching the existing
+precedence rule). Frontend: two number inputs appear alongside the "upload your own photo" file picker
+(never shown for sample-room cards); `DesignDetailPage` discloses, for any real-photo-generated design, that
+existing-furniture detection isn't implemented and the layout assumes an empty room.
+
+**Live-verified end-to-end**, the first time a real (non-fixture) photo has gone all the way through the
+entire pipeline: registered a user, uploaded a real photo with `room_width_cm=350`/`room_length_cm=420`,
+confirmed `has_known_dimensions: true`, ran `generate` to completion (not `room_dimensions_missing`),
+fetched a genuine recommendation (4 items, budget-compliant) and layout (score 0.7993, **all 5 hard
+constraints satisfied**, valid floor-plan SVG) — computed from a real upload, not a fixture. 5 new tests
+(`tests/test_room_dimensions.py`: full unlock, both-or-neither rejection, out-of-range rejection, non-numeric
+rejection, sample-room precedence). **92/92 tests passing.**
+
+**What's still NOT solved:** existing-furniture detection for real photos (still deferred, D018/D022) — a
+real uploaded room is always treated as empty, disclosed honestly in the UI, never silently assumed.
 
 ---
 

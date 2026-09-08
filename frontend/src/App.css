@@ -284,3 +284,11 @@ a { color: var(--vd-accent-dark); }
 }
 .wizard-step label { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.9rem; font-size: 0.9rem; }
 .wizard-step h3 { margin-top: 1.4rem; margin-bottom: 0.3rem; font-size: 1rem; }
+
+.room-dimensions-input {
+  display: flex;
+  gap: 1rem;
+  margin: 0.8rem 0;
+}
+.room-dimensions-input label { flex: 1; max-width: 180px; }
+.room-dimensions-input input { max-width: 100%; }
