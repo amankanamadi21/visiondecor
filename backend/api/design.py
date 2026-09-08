@@ -28,17 +28,51 @@ from backend.utils.auth_decorators import login_required
 bp = Blueprint("design", __name__, url_prefix="/api/sessions")
 
 
-def _session_used_sample_room(db, session_id: int) -> bool:
-    """D022 disclosure guardrail: true iff the session's latest RoomAnalysis
-    came from a recognized sample-room image (persist_fixture stamps
-    model_versions.source='fixture'), never true for a genuine user photo."""
-    analysis = db.execute(
+def _get_latest_analysis(db, session_id: int) -> RoomAnalysis | None:
+    return db.execute(
         select(RoomAnalysis)
         .join(RoomImage, RoomAnalysis.image_id == RoomImage.id)
         .where(RoomImage.session_id == session_id)
         .order_by(RoomAnalysis.created_at.desc())
     ).scalars().first()
+
+
+def _session_used_sample_room(db, session_id: int) -> bool:
+    """D022 disclosure guardrail: true iff the session's latest RoomAnalysis
+    came from a recognized sample-room image (persist_fixture stamps
+    model_versions.source='fixture'), never true for a genuine user photo."""
+    analysis = _get_latest_analysis(db, session_id)
     return bool(analysis and analysis.model_versions and analysis.model_versions.get("source") == "fixture")
+
+
+@bp.get("/<int:session_id>/style")
+@login_required
+def get_latest_style(session_id: int):
+    """D005/Batch ④ — works for both a recognized sample room (fixture's
+    labeled demo style) and a genuine uploaded photo (real CLIP prediction);
+    both produce a real StylePrediction row, distinguished only by
+    `is_sample_room` for disclosure (D022), never by data shape."""
+    db = get_session()
+    get_owned_session(db, session_id, g.user.id)
+
+    analysis = _get_latest_analysis(db, session_id)
+    if analysis is None or not analysis.style_predictions:
+        raise not_found("No style prediction is available for this design yet.")
+
+    prediction = analysis.style_predictions[-1]
+    return jsonify(
+        {
+            "style": {
+                "predicted_style": prediction.predicted_style,
+                "confidence": prediction.confidence,
+                "alternatives": prediction.alternatives,
+                "abstained": prediction.abstained,
+                "model_name": prediction.model_name,
+            },
+            "is_sample_room": _session_used_sample_room(db, session_id),
+            "has_known_dimensions": analysis.room_width_cm is not None and analysis.room_length_cm is not None,
+        }
+    )
 
 
 @bp.post("/<int:session_id>/generate")
@@ -218,16 +252,10 @@ def _render_floorplan_for_session(db, session_id: int, layout: Layout) -> str | 
     backend.models.visualization.Visualization)."""
     from ai.room_analysis.db_adapter import load_room_model_from_db
     from ai.visualization.floorplan import render_floorplan_svg
-    from backend.models.room import RoomAnalysis, RoomImage
     from backend.models.session import DesignSession
 
     design_session = db.get(DesignSession, session_id)
-    analysis = db.execute(
-        select(RoomAnalysis)
-        .join(RoomImage, RoomAnalysis.image_id == RoomImage.id)
-        .where(RoomImage.session_id == session_id)
-        .order_by(RoomAnalysis.created_at.desc())
-    ).scalars().first()
+    analysis = _get_latest_analysis(db, session_id)
     if analysis is None:
         return None
     loaded = load_room_model_from_db(db, analysis, design_session.room_type or "other")

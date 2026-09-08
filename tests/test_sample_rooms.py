@@ -83,6 +83,10 @@ def test_uploading_a_genuine_photo_does_not_attach_any_fixture(client, csrf_head
     assert resp.status_code == 202
     assert resp.json["is_sample_room"] is False
     _poll_job_to_terminal(client, resp.json["job_id"])
+    # Style recognition (D005/Batch ④) DOES run for a genuine photo — it's
+    # the room's DIMENSIONS that stay unknown, not the analysis as a whole.
+    assert resp.json["style_job_id"] is not None
+    _poll_job_to_terminal(client, resp.json["style_job_id"])
 
     client.patch(
         f"/api/sessions/{session_id}",
@@ -91,7 +95,9 @@ def test_uploading_a_genuine_photo_does_not_attach_any_fixture(client, csrf_head
     )
     gen_resp = client.post(f"/api/sessions/{session_id}/generate", headers=csrf_headers())
     job = _poll_job_to_terminal(client, gen_resp.json["job_id"])
-    # No RoomAnalysis exists (genuine photo, real CV not wired — D018/D022)
-    # — must fail honestly, never silently substitute a fixture.
+    # A real RoomAnalysis now exists (with a genuine style prediction), but
+    # its dimensions are unknown (D004 unresolved) — must fail with the
+    # specific, honest room_dimensions_missing error, never a fabricated
+    # layout and never a generic crash.
     assert job["status"] == "failed"
-    assert job["error_code"] == "room_analysis_missing"
+    assert job["error_code"] == "room_dimensions_missing"

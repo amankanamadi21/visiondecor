@@ -398,11 +398,12 @@ Auth            : JWT in httpOnly cookie + CSRF double-submit               [LOC
 AI runtime      : LOCAL, CPU-only                                           [LOCKED by D001]
 Computer Vision : Pretrained detection + segmentation — NOT WIRED           [deferred by D018/D022; sample
                                                                               rooms used instead of real CV]
-Style           : CLIP-RN50-quickgelu zero-shot — IMPLEMENTED, measured     [LOCKED D005; standalone module,
-                  40.2% accuracy (5/6 classes; no Minimalist ground truth    not yet wired into live upload
-                  exists in the eval dataset). Live classifier stays         flow — see Batch ④ notes]
-                  zero-shot (a trained head measured 59.8% but can't
-                  predict Minimalist at all, so isn't deployed)
+Style           : CLIP-RN50-quickgelu zero-shot — LIVE-WIRED, measured      [LOCKED D005; runs for real on
+                  40.2% accuracy (5/6 classes; no Minimalist ground truth     every genuine photo upload, not
+                  exists in the eval dataset). Live classifier stays         just a standalone module — see
+                  zero-shot (a trained head measured 59.8% but can't          Batch ④ notes. Full
+                  predict Minimalist at all, so isn't deployed)              recommendation for real photos
+                                                                              still blocked on D004]
 Recommendation  : Deterministic scoring + constrained RAG rationale        [IMPLEMENTED, live-verified]
 Knowledge base  : 40 design principles in pgvector, cited in the UI         [LOCKED D006a, seeded + verified]
 Optimization    : Simulated Annealing, hard constraints + 5-term score     [IMPLEMENTED, live-verified,
@@ -930,6 +931,40 @@ logistic-regression head improves measured accuracy from 40.2% to 59.8% on the c
 available, but is not used in the deployed system because the same dataset gap (no Minimalist images) that
 enables this comparison would also prevent a head trained on it from ever predicting Minimalist; the shipped
 classifier remains zero-shot for full six-class coverage."
+
+## D005 wired into the live upload pipeline — 2026-09-08
+
+Per user request, style recognition now runs for real on any genuine (non-sample) uploaded photo, not just
+as a standalone module. Scoped deliberately narrow: **style only, not full recommendation** — see rationale
+below.
+
+**What happens now, for a genuine (non-sample) photo:** `POST /api/sessions/<id>/image` submits a second,
+independent background job (`JobStage.STYLE_RECOGNITION` — defined since Batch ①, unused until now) that
+runs the real CLIP classifier and persists a genuine `StylePrediction`, attached to a minimal `RoomAnalysis`
+shell with `room_width_cm`/`room_length_cm` explicitly `NULL` and `scale_source=UNKNOWN`. New endpoint
+`GET /api/sessions/<id>/style` returns it (works identically for a sample room's fixture-labeled style and a
+real photo's genuine prediction — same response shape, distinguished only by `is_sample_room`).
+
+**Why not chained after `preprocess`:** `classify_style` does its own image resizing internally, so it has
+no dependency on the preprocess job's output — running it as an independent job avoids both a fake ordering
+dependency and a confusing "progress bar resets to 0%" glitch two sequential 0-100 stages in one job would
+have caused.
+
+**D004 (room dimension strategy) remains explicitly open — flagged, not silently resolved.** A real photo
+now gets a genuine style prediction but still cannot generate a full recommendation, because dimensions are
+unknown. `run_generate_design` gained a new, distinct error, `room_dimensions_missing` — separate from
+`room_analysis_missing` (analysis now genuinely exists; specifically its dimensions don't) — with a message
+directing the user to a sample room for the full pipeline. This was a deliberate scope decision (stated to
+the user, not decided silently): fully solving D004 (user-entered dimensions vs. depth estimation vs.
+reference-object anchoring) is separate, larger work.
+
+**Live-verified**, not just unit-tested: registered a real user, uploaded a genuine non-sample photo through
+the actual running server, confirmed `style_job_id` present, polled it to completion, fetched
+`GET /style` and got a real classification (correctly `abstained: true` at 32.6% confidence on a
+genuinely uninformative test image — exactly brief PART 4's intended behavior), then confirmed `generate`
+fails with `room_dimensions_missing` end-to-end. 4 new integration tests
+(`tests/test_style_recognition_upload.py`) plus 1 existing test updated to match the new, more specific
+error code. **87/87 tests passing.**
 
 ---
 

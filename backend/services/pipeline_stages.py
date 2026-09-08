@@ -11,10 +11,19 @@ rows to exist, and raises a clear, specific PipelineStageError if they
 don't — it never silently substitutes fixture data (see PLAN.md D018
 guardrail).
 
-`room_analysis`, `style_recognition` (as standalone, image-triggered
-stages), and `visualization` remain deliberate placeholders — there is no
-fake YOLO detection, no fake style prediction, no fake render hiding behind
-these functions.
+Batch ④ adds `run_style_recognition_for_upload`: for a genuine (non-sample)
+uploaded photo, runs the REAL CLIP-RN50 zero-shot classifier (D005) and
+persists a real StylePrediction — attached to a minimal RoomAnalysis "shell"
+with dimensions explicitly NULL (`scale_source=UNKNOWN`), since detection/
+segmentation/dimension estimation remain deferred (D018/D022, and D004 is
+still unresolved). This deliberately does NOT unlock full recommendation
+generation for real photos — `run_generate_design` below now raises a
+distinct `room_dimensions_missing` error for exactly this case, rather than
+crashing on `None * None` or silently guessing a room size.
+
+`room_analysis` (detection/segmentation) and `visualization` remain
+deliberate placeholders — there is no fake YOLO detection and no fake
+render hiding behind these functions.
 """
 from __future__ import annotations
 
@@ -61,6 +70,56 @@ def run_preprocess(job_id: int, report_progress: Callable[[int], None], *, image
     report_progress(100)
 
 
+def run_style_recognition_for_upload(
+    job_id: int, report_progress: Callable[[int], None], *, room_image_id: int, image_path: str, session_factory
+) -> None:
+    """D005, wired into the live upload path for a genuine (non-sample)
+    photo — see module docstring. Idempotent: does nothing if this
+    RoomImage already has an analysis (e.g. a duplicate upload)."""
+    from ai.style_recognition.classifier import classify_style
+    from backend.models.room import RoomAnalysis, RoomImage, ScaleSource
+    from backend.models.style import StylePrediction
+
+    db: Session = session_factory()
+    try:
+        room_image = db.get(RoomImage, room_image_id)
+        if room_image is None or room_image.analyses:
+            report_progress(100)
+            return
+
+        report_progress(20)
+        image = Image.open(image_path)
+        result = classify_style(image)
+        report_progress(70)
+
+        analysis = RoomAnalysis(
+            image_id=room_image.id,
+            floor_polygon=None,
+            free_space_ratio=None,
+            room_width_cm=None,
+            room_length_cm=None,
+            scale_source=ScaleSource.UNKNOWN,
+            model_versions={"source": "real_upload", "classifier": result.model_name},
+        )
+        db.add(analysis)
+        db.flush()
+
+        db.add(
+            StylePrediction(
+                analysis_id=analysis.id,
+                predicted_style=result.predicted_style,
+                confidence=result.confidence,
+                alternatives=result.alternatives,
+                model_name=result.model_name,
+                abstained=result.abstained,
+            )
+        )
+        db.commit()
+        report_progress(100)
+    finally:
+        db.close()
+
+
 def run_generate_design(job_id: int, report_progress: Callable[[int], None], *, session_id: int, session_factory) -> None:
     from ai.layout_optimization.optimizer import LayoutInfeasibleError, PlacementSpec, optimize_layout
     from ai.recommendation.scoring import generate_recommendation
@@ -93,6 +152,18 @@ def run_generate_design(job_id: int, report_progress: Callable[[int], None], *, 
                 "room_analysis_missing",
                 "Room analysis is not available yet for this design. Upload a room image and wait for "
                 "analysis to complete before generating recommendations.",
+            )
+        if analysis.room_width_cm is None or analysis.room_length_cm is None:
+            # D005/Batch ④: a real (non-sample) uploaded photo gets a genuine
+            # style prediction but no known dimensions (D004 remains
+            # unresolved — no detection/segmentation/depth estimation yet).
+            # Distinct from room_analysis_missing: analysis DOES exist here,
+            # it's just incomplete — a different, equally honest failure mode.
+            raise PipelineStageError(
+                "room_dimensions_missing",
+                "This design's room style has been identified, but its physical dimensions are not known "
+                "yet, so a layout cannot be generated. Automatic room-dimension detection from a photo is "
+                "not yet implemented — try one of the sample rooms to see the full pipeline.",
             )
         report_progress(10)
 

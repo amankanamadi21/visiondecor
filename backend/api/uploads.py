@@ -4,13 +4,18 @@ corruption), strips EXIF/GPS, dedupes by content hash, stores it under a
 per-user path, records a RoomImage row, and enqueues the `preprocess`
 background job.
 
-Detection/segmentation/style recognition as REAL, general-purpose stages
-are explicitly NOT triggered here — see backend/services/pipeline_stages.py
-and decision D018/D022. However, if the uploaded image's content hash
-matches one of the shipped sample-room images, its corresponding fixture
-RoomAnalysis is auto-attached (decision D022) — this is recognition of a
-known, fixed set of demo images, not general room analysis, and it never
-happens for a genuine, unrecognized user photo.
+Detection/segmentation as REAL, general-purpose stages are explicitly NOT
+triggered here — see backend/services/pipeline_stages.py and decision
+D018/D022. If the uploaded image's content hash matches one of the shipped
+sample-room images, its corresponding fixture RoomAnalysis is auto-attached
+(decision D022) — recognition of a known, fixed set of demo images, not
+general room analysis.
+
+Style recognition (D005), however, IS real and IS triggered here for any
+genuine, unrecognized photo — see run_style_recognition_for_upload. It
+produces a real prediction but no room dimensions (D004 remains open), so
+full recommendation generation still isn't available for a real photo;
+`run_generate_design` reports that honestly via `room_dimensions_missing`.
 """
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ from backend.errors import validation_error
 from backend.models.room import RoomImage
 from backend.models.session import JobStage
 from backend.services.image_validation import validate_and_clean_image
-from backend.services.pipeline_stages import run_preprocess
+from backend.services.pipeline_stages import run_preprocess, run_style_recognition_for_upload
 from backend.utils.auth_decorators import login_required
 
 bp = Blueprint("uploads", __name__, url_prefix="/api/sessions")
@@ -88,7 +93,7 @@ def upload_room_image(session_id: int):
 
     job_runner = current_app.config["VD_JOB_RUNNER"]
 
-    def _work(job_id: int, report_progress):
+    def _preprocess_work(job_id: int, report_progress):
         run_preprocess(job_id, report_progress, image_path=original_path, output_path=processed_path)
         # Record the processed path on a fresh session — the worker thread
         # cannot reuse the request-scoped session `db` above.
@@ -100,7 +105,28 @@ def upload_room_image(session_id: int):
             img.processed_path = processed_path
             s.commit()
 
-    job_id = job_runner.submit(session_id, JobStage.PREPROCESS, _work)
+    job_id = job_runner.submit(session_id, JobStage.PREPROCESS, _preprocess_work)
+
+    # D005/Batch ④: real style recognition for a genuine (unrecognized)
+    # photo — runs as its own independent job (not chained after preprocess;
+    # classify_style does its own resizing, so it doesn't need the
+    # processed output, and two unrelated 0-100 progress bars in one job
+    # would look like a glitch). Not run for recognized sample rooms —
+    # persist_fixture already gave them a style, and re-running a real
+    # classifier over a placeholder graphic would be meaningless (see
+    # ai/room_analysis/sample_rooms.py).
+    style_job_id = None
+    if fixture_name is None:
+        def _style_work(job_id: int, report_progress):
+            from backend.db import get_engine
+            from sqlalchemy.orm import Session as SASession
+
+            run_style_recognition_for_upload(
+                job_id, report_progress, room_image_id=room_image.id, image_path=original_path,
+                session_factory=lambda: SASession(get_engine()),
+            )
+
+        style_job_id = job_runner.submit(session_id, JobStage.STYLE_RECOGNITION, _style_work)
 
     return (
         jsonify(
@@ -115,6 +141,7 @@ def upload_room_image(session_id: int):
                 # to discover it — D022 disclosure guardrail.
                 "is_sample_room": fixture_name is not None,
                 "job_id": job_id,
+                "style_job_id": style_job_id,
             }
         ),
         202,
