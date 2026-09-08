@@ -20,7 +20,7 @@ from backend.db import get_session
 from backend.errors import not_found
 from backend.models.layout import Layout, LayoutObject
 from backend.models.recommendation import Recommendation, RecommendationItem
-from backend.models.room import RoomAnalysis, RoomImage
+from backend.models.room import DetectionSource, RoomAnalysis, RoomImage
 from backend.models.session import JobStage
 from backend.models.visualization import Visualization
 from backend.utils.auth_decorators import login_required
@@ -45,6 +45,33 @@ def _session_used_sample_room(db, session_id: int) -> bool:
     return bool(analysis and analysis.model_versions and analysis.model_versions.get("source") == "fixture")
 
 
+FURNITURE_SOURCES = (DetectionSource.DETECTION, DetectionSource.REAL_DETECTION)
+ARCHITECTURAL_SOURCES = (DetectionSource.SEGMENTATION, DetectionSource.REAL_SEGMENTATION)
+
+
+def _detected_objects_dict(analysis: RoomAnalysis, is_sample_room: bool) -> dict:
+    """Display-only summary of what FR-2's room analysis found — real CV
+    output (2026-09-08 batch) for a genuine photo, or the fixture's labeled
+    ground truth for a sample room (both already exist as DetectedObject
+    rows; this just presents them uniformly). Confidence is always real:
+    1.0 for fixture ground truth, the actual model output for real CV."""
+    furniture = [
+        {"label": obj.class_label, "confidence": obj.confidence}
+        for obj in analysis.detected_objects
+        if obj.source in FURNITURE_SOURCES
+    ]
+    architectural = [
+        {"label": obj.class_label, "confidence": obj.confidence}
+        for obj in analysis.detected_objects
+        if obj.source in ARCHITECTURAL_SOURCES
+    ]
+    return {
+        "source": "fixture_ground_truth" if is_sample_room else "real_cv",
+        "furniture": furniture,
+        "architectural": architectural,
+    }
+
+
 @bp.get("/<int:session_id>/style")
 @login_required
 def get_latest_style(session_id: int):
@@ -60,6 +87,7 @@ def get_latest_style(session_id: int):
         raise not_found("No style prediction is available for this design yet.")
 
     prediction = analysis.style_predictions[-1]
+    is_sample_room = _session_used_sample_room(db, session_id)
     return jsonify(
         {
             "style": {
@@ -69,8 +97,9 @@ def get_latest_style(session_id: int):
                 "abstained": prediction.abstained,
                 "model_name": prediction.model_name,
             },
-            "is_sample_room": _session_used_sample_room(db, session_id),
+            "is_sample_room": is_sample_room,
             "has_known_dimensions": analysis.room_width_cm is not None and analysis.room_length_cm is not None,
+            "detected_objects": _detected_objects_dict(analysis, is_sample_room),
         }
     )
 

@@ -95,8 +95,13 @@ class RoomAnalysis(Base, TimestampMixin):
 
 
 class DetectionSource(str, enum.Enum):
-    DETECTION = "detection"  # e.g. YOLO bounding box
-    SEGMENTATION = "segmentation"  # e.g. wall/floor/window/door mask
+    DETECTION = "detection"  # cm-space, dev fixture rows only (persist_fixture)
+    SEGMENTATION = "segmentation"  # cm-space, dev fixture rows only (persist_fixture)
+    # Genuine CV output for a real uploaded photo (2026-09-08 batch), pixel-
+    # space bbox. Deliberately NOT consumed by load_room_model_from_db this
+    # batch (display-only scope decision) — see that function's docstring.
+    REAL_DETECTION = "real_detection"  # YOLO bounding box
+    REAL_SEGMENTATION = "real_segmentation"  # wall/floor/ceiling/window/door mask
 
 
 class DetectedObject(Base):

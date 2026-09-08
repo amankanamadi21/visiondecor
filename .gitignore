@@ -23,6 +23,9 @@ datasets/*
 !datasets/.gitkeep
 models/*
 !models/.gitkeep
+# Pretrained weights ultralytics/etc. auto-download to cwd (e.g. yolov8n.pt) —
+# reproducible on first use, never committed, wherever they land.
+*.pt
 uploads/*
 !uploads/.gitkeep
 generated/*

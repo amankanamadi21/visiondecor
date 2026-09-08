@@ -42,3 +42,12 @@ scikit-learn==1.9.0
 
 # --- Batch 5: Cloudflare Workers AI provider (D003) ---
 requests==2.34.2
+
+# --- Batch 6: real furniture detection + architectural segmentation
+# (FR-2, Report Issue R-07) — CPU-only pretrained models, no fine-tuning ---
+ultralytics==8.4.143
+transformers==4.57.6
+opencv-python-headless==5.0.0.93
+
+# --- Batch 6: detection mAP evaluation only (evaluation/run_detection_study.py) ---
+pycocotools==2.0.11

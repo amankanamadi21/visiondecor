@@ -1122,6 +1122,56 @@ for a real photo when both Gemini and Cloudflare are unavailable is still the de
 
 ---
 
+# ▶ BATCH ⑥ : Real CV — furniture detection + architectural segmentation (FR-2, Report Issue R-07) — 2026-09-08
+
+### Scope decisions — **LOCKED 2026-09-08**, explicit user sign-off before any code was written
+| Question | Decision | Rejected |
+|---|---|---|
+| How far does real CV go into the pipeline? | **Detect & display only.** Real detections/segmentation are persisted and shown, but do NOT feed the recommendation engine or layout optimiser — a real photo is still modeled as empty, identical to today. | Full integration this batch (feed detections into the optimiser as immovable existing furniture) — deferred as a separately-scoped follow-up once detection quality is seen on real photos; a bad detection/scale estimate could otherwise make a real room look artificially infeasible with no safety net yet in place. |
+| Should detection be quantitatively evaluated? | **Yes — revive the mAP metric D006a cut** on 2026-09-06 to fund the RAG work (which had downgraded Report Issue R-07 from "measured" to "documented limitation"). Since a real detector now exists anyway, measuring it costs little extra. | Keep the cheap qualitative-only mitigation (per-class counts on ~20 demo photos, no mAP). |
+
+### What was built
+- **`ai/room_analysis/detection.py`** — pretrained COCO YOLOv8n (`ultralytics`, no fine-tuning per D001), CPU inference. `INTERIOR_RELEVANT_CLASSES` (chair, couch, potted plant, bed, dining table, tv, sink, book, clock, vase, refrigerator) verified against the model's own `model.names` at runtime, not assumed from memory — matches PLAN.md's original (pre-D006a-cut) dataset decision's "chair, sofa/couch, bed, table, tv, sink" intersecting label space.
+- **`ai/room_analysis/segmentation.py`** — pretrained ADE20K SegFormer-B0 (`transformers`, ~3.8M params, CPU-viable, no fine-tuning) for wall/floor/ceiling/window/door — the classes COCO fundamentally cannot provide (R-07's actual technical claim). Class matching is by NAME SUBSTRING against the model's own `config.id2label`, verified once empirically (2026-09-08: ADE20K class 0=wall, 3=floor, 5=ceiling, 8=windowpane, 14=door, 58='screen door'), so a future checkpoint swap can't silently break it. Per-region confidence is a REAL mean softmax probability over the mask, not a fabricated 1.0 — semantic segmentation has no natural per-instance confidence otherwise.
+- **Schema:** two new `DetectionSource` enum values, `REAL_DETECTION`/`REAL_SEGMENTATION` (migration `63d46e0aa05a`), distinguishing genuine pixel-space CV output from the pre-existing cm-space `DETECTION`/`SEGMENTATION` values reserved for dev fixture rows. Repeated the exact enum-casing lesson from `dae5fd7e07e8`: SQLAlchemy's Enum column stores the Python member's NAME, not `.value`, so Postgres labels had to be uppercase.
+- **`ai/room_analysis/db_adapter.py`**: new `persist_real_cv_detections()` writes both detection and segmentation results as `DetectedObject` rows (pixel-space `bbox`, segmentation rows additionally carry a `polygon` key — exactly the shape the model's own docstring already anticipated: *"Detection: {x,y,w,h}. Segmentation: polygon or RLE mask"*, written in a prior batch before any real CV existed). **`load_room_model_from_db` explicitly skips both new sources** — the literal enforcement of "detect & display only." A dedicated regression test (`test_real_detections_do_not_affect_generation_or_layout_this_batch`) guards this boundary: uploads a real photo with real detections, generates a full design, and asserts the layout still contains zero `is_existing` objects.
+- **Pipeline:** wired into the existing `run_style_recognition_for_upload` job (no new job stage/polling round-trip) — runs after the style prediction commits, so a slow/failed CV pass can never block the style result the rest of the UI depends on.
+- **API:** `GET /sessions/<id>/style` gained a `detected_objects` field — `{source: "real_cv" | "fixture_ground_truth", furniture: [...], architectural: [...]}`, unifying real CV output and a sample room's labeled fixture ground truth (both already existed as `DetectedObject` rows) into one display shape.
+- **Tests:** `tests/test_real_cv_detection.py`, 6 tests — real-photo detection/segmentation sanity checks (against the already-downloaded Houzz dataset, not synthetic images, since a solid-color image only proves a detector doesn't crash), the `id2label` substring-matching regression guard, real-upload persistence + API shape, and the critical "does not affect generation" guard above. **116/116 tests passing.**
+
+### Evaluation — `python -m evaluation.run_detection_study`, 2026-09-08
+
+Measured against a real-photo subset of COCO val2017: every one of the 5000 val images containing at least
+one interior-relevant class (1604 images, 5599 ground-truth objects) — not synthetic, not cherry-picked.
+Images downloaded on demand by the script itself (~250MB, not the full ~778MB val2017.zip), reproducible,
+not committed to git (`datasets/*` is gitignored).
+
+```
+mAP@50:      0.5294
+mAP@50:95:   0.3666
+
+At the live app's operating point (confidence >= 0.35, IoU >= 0.5):
+  Precision: 0.7575  (1674 TP / 2210 predictions)
+  Recall:    0.2990  (1674 TP / 5599 ground truth)
+  F1:        0.4287
+```
+
+**Honest reading for the report:** high precision, modest recall — when the detector says "chair"/"couch"/
+etc. it's usually right (75.8% of the time), but it misses roughly 70% of ground-truth interior objects at
+this operating threshold. Pycocotools' size breakdown explains why: AP on `small` objects is only 0.133 vs.
+0.486 on `large` — YOLOv8n (the smallest, fastest variant, chosen for CPU inference per D001) trades recall
+on small/distant objects for speed. This directly resolves Report Issue R-07 as a **measured finding**
+(precision/recall/F1/mAP@50, exactly as Section K asks) rather than a documented limitation — the intended
+outcome of reviving this metric.
+
+**What's still NOT solved:** detected furniture/architecture is display-only, not fed into layout — see the
+scope decision above. Small/occluded object recall is a genuine, measured weakness, not silently hidden.
+Segmentation (wall/floor/ceiling/window/door) has no equivalent quantitative study this batch — ADE20K
+ground-truth segmentation masks would be needed for that, a separate (larger) undertaking not in this
+batch's scope; only detection was quantitatively evaluated, matching what was actually decided above.
+
+---
+
 ## Verification approach (applies from Phase 3 onward)
 Each module ships with: a runnable CLI entry point taking a real image/JSON and printing structured output,
 a pytest suite, and a documented "how to verify" recipe. No module is called complete until its output has

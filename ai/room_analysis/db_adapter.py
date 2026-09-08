@@ -106,10 +106,55 @@ def persist_fixture(db: Session, session_id: int, fixture: RoomFixture) -> RoomA
     return analysis
 
 
+def persist_real_cv_detections(db: Session, analysis_id: int, image_path: str) -> None:
+    """Real furniture detection (ai.room_analysis.detection, pretrained COCO
+    YOLO) + architectural segmentation (ai.room_analysis.segmentation,
+    pretrained ADE20K SegFormer) for a genuine uploaded photo — 2026-09-08
+    CV batch, FR-2/Report Issue R-07. Display-only this batch: rows are
+    tagged DetectionSource.REAL_DETECTION/REAL_SEGMENTATION, which
+    `load_room_model_from_db` deliberately skips (see below) — they do not
+    affect recommendation or layout generation yet. That is a scoped,
+    explicit decision (2026-09-08), not an oversight; feeding real detections
+    into the optimiser as immovable existing furniture is a natural,
+    separately-decided follow-up once detection quality has been observed
+    on real photos."""
+    from ai.room_analysis.detection import detect_objects
+    from ai.room_analysis.segmentation import segment_architecture
+
+    for detection in detect_objects(image_path):
+        db.add(
+            DetectedObject(
+                analysis_id=analysis_id,
+                class_label=detection.class_label,
+                confidence=detection.confidence,
+                source=DetectionSource.REAL_DETECTION,
+                bbox=detection.bbox_px,
+                area_px=detection.area_px,
+            )
+        )
+
+    for region in segment_architecture(image_path):
+        db.add(
+            DetectedObject(
+                analysis_id=analysis_id,
+                class_label=region.class_label,
+                confidence=region.confidence,
+                source=DetectionSource.REAL_SEGMENTATION,
+                bbox={**region.bbox_px, "polygon": region.polygon_px},
+                area_px=region.area_px,
+            )
+        )
+    db.commit()
+
+
 def load_room_model_from_db(db: Session, analysis: RoomAnalysis, room_type: str) -> LoadedAnalysis:
     openings: list[Opening] = []
     furniture: list[FurnitureItem] = []
     for obj in analysis.detected_objects:
+        if obj.source in (DetectionSource.REAL_DETECTION, DetectionSource.REAL_SEGMENTATION):
+            # Display-only this batch (see persist_real_cv_detections) — not
+            # yet fed into the RoomModel the recommendation/layout engine use.
+            continue
         if obj.source == DetectionSource.SEGMENTATION and obj.class_label in ("door", "window"):
             openings.append(
                 Opening(kind=obj.class_label, wall=obj.bbox["wall"], position_cm=obj.bbox["position_cm"], width_cm=obj.bbox["width_cm"])

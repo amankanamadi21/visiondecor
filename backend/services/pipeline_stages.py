@@ -84,12 +84,18 @@ def run_style_recognition_for_upload(
     photo — see module docstring. Idempotent: does nothing if this
     RoomImage already has an analysis (e.g. a duplicate upload).
 
+    Also runs real furniture detection + architectural segmentation
+    (2026-09-08 CV batch) in the same job — kept the original name since this
+    is still the one "analyze a genuine upload" job the frontend polls.
+
     `room_width_cm`/`room_length_cm` resolve D004 (decision log, 2026-09-08):
     when both are given (validated upstream in backend/api/uploads.py), the
     RoomAnalysis is stamped `scale_source=USER_PROVIDED` with real
     dimensions, unlocking full recommendation generation for a real photo —
     not just a style prediction. When absent, dimensions stay NULL and
     `scale_source=UNKNOWN`, exactly as before this decision was made."""
+    from ai.room_analysis import detection, segmentation
+    from ai.room_analysis.db_adapter import persist_real_cv_detections
     from ai.style_recognition.classifier import classify_style
     from backend.models.room import RoomAnalysis, RoomImage, ScaleSource
     from backend.models.style import StylePrediction
@@ -104,7 +110,7 @@ def run_style_recognition_for_upload(
         report_progress(20)
         image = Image.open(image_path)
         result = classify_style(image)
-        report_progress(70)
+        report_progress(50)
 
         has_dimensions = room_width_cm is not None and room_length_cm is not None
         analysis = RoomAnalysis(
@@ -114,7 +120,10 @@ def run_style_recognition_for_upload(
             room_width_cm=room_width_cm,
             room_length_cm=room_length_cm,
             scale_source=ScaleSource.USER_PROVIDED if has_dimensions else ScaleSource.UNKNOWN,
-            model_versions={"source": "real_upload", "classifier": result.model_name},
+            model_versions={
+                "source": "real_upload", "classifier": result.model_name,
+                "detector": detection.MODEL_NAME, "segmenter": segmentation.MODEL_NAME,
+            },
         )
         db.add(analysis)
         db.flush()
@@ -130,6 +139,13 @@ def run_style_recognition_for_upload(
             )
         )
         db.commit()
+        report_progress(70)
+
+        # Real furniture detection + architectural segmentation (2026-09-08
+        # CV batch, FR-2/R-07) — display-only, see db_adapter.py. Runs after
+        # the style commit above so a slow/failed CV pass never blocks the
+        # style prediction the rest of the UI depends on.
+        persist_real_cv_detections(db, analysis.id, image_path)
         report_progress(100)
     finally:
         db.close()
