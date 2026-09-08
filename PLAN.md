@@ -1209,6 +1209,63 @@ batch's changes). No frontend test runner exists in this project (`git log`/`pac
 type-check + build has been the verification method for every frontend change so far); verification here was
 the Playwright walkthrough itself, screenshots inspected directly.
 
+## D003(CV) amendment: "area-only reservation" — feeding real detections into generation — 2026-09-08
+
+The original detect-and-display scope explicitly deferred this ("a natural, separately-decided follow-up
+once detection quality has been observed on real photos") — now decided, once mAP was actually measured
+(0.53 mAP@50, 76% precision at the live threshold).
+
+**The real problem, surfaced before any code was written:** a single 2D photo has no depth information. A
+detection's pixel bounding box cannot be honestly converted into a real-world (x, y) position OR an exact
+(width, depth) size — an object's apparent pixel size depends on its unmeasured distance from the camera.
+Naively scaling by (room_width_cm / image_width_px) would fabricate a specific position/size that was never
+actually measured — exactly the violation Report Issue R-10 and this project's own provenance rules exist to
+prevent. This was flagged back to the user as a genuine, previously-undiscussed fork rather than picked
+silently.
+
+**Decision:** Area-only reservation. Confidently-detected furniture (same 0.35 confidence threshold already
+used for display — no new, unmeasured threshold invented) whose class maps to a real catalog category
+(chair→chair, couch→sofa, bed→bed, dining table→table — the only classes with a clear semantic match) reduces
+`RoomAnalysis.free_space_ratio` by that category's MEAN footprint from the actual seeded catalog (real
+project data, not a guessed number). No detected item is ever given a position or claimed exact size.
+Classes with no mapped category (tv, sink, book, clock, vase, refrigerator, potted plant) stay display-only,
+contributing nothing to the reservation.
+**Rejected:** estimated geometry via a flat-wall simplifying assumption (fastest, but visibly wrong without
+perspective correction, and the honesty caveat would have to fight the floor plan's implied precision);
+confidence-gated + user-confirmed size (most honest and most spatially useful, but adds a real UI step and
+only covers a confident subset — deferred, not ruled out, if the area-only version proves too coarse).
+
+**What this changes vs. what it doesn't:** `free_area_cm2` in `ai/recommendation/scoring.py` (already existing
+code, `room.area_cm2 * room.free_space_ratio`) now reflects real detections for a real photo, so the
+recommendation's `space_fit` scoring genuinely favors smaller/fewer items when the room already has
+detected furniture — a real, measurable effect. The LAYOUT optimizer is untouched: `load_room_model_from_db`
+still builds `existing_furniture=[]` for a real photo (REAL_DETECTION/REAL_SEGMENTATION rows are still
+explicitly skipped there), so the layout's hard constraints and `is_existing` set are exactly as before —
+nothing is ever placed at a position that was never measured.
+
+**Built:** `ai/room_analysis/db_adapter.py` gained `_mean_catalog_footprint_cm2` (real DB query against
+`furniture_catalog`) and `_estimate_reserved_area_cm2`, both called from `persist_real_cv_detections` right
+after the existing detection/segmentation persistence, only when room dimensions are known (D004) — a photo
+without dimensions still can't be scored at all, unchanged. 8 tests in `tests/test_real_cv_detection.py`
+(replacing the old "detections never affect generation" regression test with one that asserts the new,
+correct boundary: `free_space_ratio` can change, `is_existing` objects in the layout never appear), including
+2 new pure-logic tests against real catalog data (isolating the reservation math from real-model variability,
+matching this project's established pattern). **112/112 tests passing.**
+
+**Live-verified twice** through the actual running app (Playwright, real photo with a detected couch):
+generating the same session's design twice, before and after this change, produced **visibly different
+recommendations** — a "Modular Sectional Sofa" (260×160cm) the first time, a smaller "Nordic Oak 3-Seater
+Sofa" the second time, with a correspondingly lower total cost (INR 61,795 vs. 72,795) — a real, observed
+behavioral effect of the reservation, not just a passing unit test. All three disclosure strings (Step 2,
+Step 3, and the design-detail badge) updated to describe the actual current behavior; this is their third
+revision this batch as the real behavior kept changing underneath them — each one checked against what was
+actually true at the time, not left to go stale again.
+
+**What's still NOT solved:** only 4 of 11 tracked detection classes have a catalog-category mapping; the rest
+remain purely cosmetic. No position is ever assigned, so a floor plan still can't show *where* the existing
+sofa/chair/bed/table actually is — only that the room has less free space than assumed. Confidence-gated,
+user-confirmed real geometry (the rejected option above) remains the honest path to that, if ever wanted.
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)

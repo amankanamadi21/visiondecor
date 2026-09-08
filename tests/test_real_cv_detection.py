@@ -2,10 +2,19 @@
 Real furniture detection (ai.room_analysis.detection, pretrained COCO
 YOLOv8n) + architectural segmentation (ai.room_analysis.segmentation,
 pretrained ADE20K SegFormer-B0) — 2026-09-08 CV batch, FR-2/Report Issue
-R-07. Scope decision (locked with the user before this batch): detect &
-DISPLAY only — real detections are persisted and shown to the user, but do
-NOT feed the recommendation engine or layout optimiser this batch. The
-regression test at the bottom guards exactly that boundary.
+R-07.
+
+Two scope decisions apply, both locked with the user:
+1. Detect & DISPLAY — real detections are persisted and shown to the user.
+2. "Area-only reservation" (amending the original display-only-only scope
+   once detection quality had actually been measured): confidently-detected
+   furniture with a class mapped to a real catalog category reduces the
+   room's free_space_ratio, using the catalog's own mean footprint for that
+   category. Nothing detected is ever given a real (x, y) position or exact
+   size — a single 2D photo has no depth information to derive one honestly
+   — so the recommendation numbers can change, but the layout's existing-
+   furniture set stays empty. The tests at the bottom guard exactly that
+   boundary.
 
 Unit-level checks run against a real photo from the already-downloaded Houzz
 dataset (datasets/houzz_styles/) — a synthetic solid-color image only proves
@@ -19,9 +28,13 @@ import time
 
 import pytest
 from PIL import Image
+from sqlalchemy.orm import Session
 
-from ai.room_analysis.detection import detect_objects
+from ai.recommendation.scoring import DEFAULT_FREE_SPACE_RATIO
+from ai.room_analysis.db_adapter import MIN_FREE_SPACE_RATIO, _estimate_reserved_area_cm2, _mean_catalog_footprint_cm2
+from ai.room_analysis.detection import Detection, detect_objects
 from ai.room_analysis.segmentation import segment_architecture
+from backend.db import get_engine
 
 REAL_PHOTO = "datasets/houzz_styles/dataset_test/dataset_test/contemporary/contemporary_118.jpg"
 requires_dataset = pytest.mark.skipif(
@@ -121,14 +134,47 @@ def test_genuine_upload_persists_real_detections_for_display(client, csrf_header
         assert 0.0 <= item["confidence"] <= 1.0
 
 
+# --- Unit-level: the "area-only reservation" math itself ---
+
+def test_reservation_uses_real_catalog_data_not_a_guessed_number(app):
+    """A fake, controlled detection list (not real model output — that's
+    covered by the live tests below) isolates the reservation MATH from
+    real-model flakiness, matching this project's established pattern of
+    testing pure logic separately from real model behavior."""
+    with Session(get_engine()) as db:
+        fake_detections = [
+            Detection(class_label="couch", confidence=0.9, bbox_px={"x": 0, "y": 0, "w": 10, "h": 10}, area_px=100),
+        ]
+        reserved = _estimate_reserved_area_cm2(db, fake_detections)
+        expected = _mean_catalog_footprint_cm2(db, "sofa")  # couch -> sofa category
+    assert expected is not None and expected > 0
+    assert reserved == expected
+
+
+def test_reservation_ignores_low_confidence_and_unmapped_classes(app):
+    with Session(get_engine()) as db:
+        low_confidence = [
+            Detection(class_label="couch", confidence=0.1, bbox_px={"x": 0, "y": 0, "w": 10, "h": 10}, area_px=100),
+        ]
+        no_mapping = [
+            Detection(class_label="tv", confidence=0.9, bbox_px={"x": 0, "y": 0, "w": 10, "h": 10}, area_px=100),
+        ]
+        assert _estimate_reserved_area_cm2(db, low_confidence) == 0.0
+        assert _estimate_reserved_area_cm2(db, no_mapping) == 0.0
+
+
+# --- Integration: wired into the real upload pipeline ---
+
 @requires_dataset
-def test_real_detections_do_not_affect_generation_or_layout_this_batch(client, csrf_headers):
-    """The scoped decision (2026-09-08): detect & display only. A real photo
-    with real, persisted furniture/architectural detections must still be
-    modeled as an EMPTY room by the recommendation/layout engine — identical
-    to pre-CV-batch behavior. If this ever fails, someone wired
-    REAL_DETECTION/REAL_SEGMENTATION into load_room_model_from_db without
-    that being a separately reviewed decision."""
+def test_confident_real_detections_reduce_free_space_but_never_place_an_object(client, csrf_headers):
+    """The current, amended boundary (2026-09-08): a real photo with real,
+    persisted furniture detections CAN change free_space_ratio (and
+    therefore recommendation scoring) via the area-only reservation — but
+    must still never be modeled as containing a positioned "existing"
+    object in the layout, since a single 2D photo can't honestly measure
+    one. If the layout ever gains an is_existing object from this path,
+    someone wired REAL_DETECTION into load_room_model_from_db's furniture
+    list without that being a separately reviewed decision."""
     _register_and_login(client)
     session_id = _create_session(client, csrf_headers)
 
@@ -145,10 +191,15 @@ def test_real_detections_do_not_affect_generation_or_layout_this_batch(client, c
     job = _poll_job_to_terminal(client, resp.json["style_job_id"])
     assert job["status"] == "done", job
 
-    # Confirm real detections really were persisted (so a no-op/broken CV
-    # stage can't make this test pass vacuously).
     detected = client.get(f"/api/sessions/{session_id}/style").json["detected_objects"]
-    assert len(detected["furniture"]) > 0 or len(detected["architectural"]) > 0
+    assert any(item["label"] == "couch" for item in detected["furniture"])  # confirms this test photo still detects a mapped class
+
+    with Session(get_engine()) as db:
+        from backend.models.room import RoomAnalysis
+
+        analysis = db.query(RoomAnalysis).order_by(RoomAnalysis.id.desc()).first()
+        assert analysis.free_space_ratio is not None
+        assert MIN_FREE_SPACE_RATIO <= analysis.free_space_ratio < DEFAULT_FREE_SPACE_RATIO
 
     client.patch(
         f"/api/sessions/{session_id}", json={"preferred_style": "Modern", "budget": 80000},

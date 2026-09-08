@@ -89,8 +89,9 @@ export function DesignDetailPage() {
       {!isSampleRoom && recommendation && (
         <div className="sample-room-badge">
           Real photo, user-provided dimensions (decision D004) — style recognition and furniture/
-          architectural detection are both real (see below), but detections aren't yet used to plan around
-          what you already have, so this design assumes the room is empty.
+          architectural detection are both real (see below). Confident furniture detections reduced the
+          estimated free space used for these recommendations, but nothing detected is placed at a specific
+          spot in the layout — a single photo can't measure exact positions.
         </div>
       )}
 

@@ -98,8 +98,10 @@ class DetectionSource(str, enum.Enum):
     DETECTION = "detection"  # cm-space, dev fixture rows only (persist_fixture)
     SEGMENTATION = "segmentation"  # cm-space, dev fixture rows only (persist_fixture)
     # Genuine CV output for a real uploaded photo (2026-09-08 batch), pixel-
-    # space bbox. Deliberately NOT consumed by load_room_model_from_db this
-    # batch (display-only scope decision) — see that function's docstring.
+    # space bbox. Never turned into a positioned "existing" FurnitureItem by
+    # load_room_model_from_db — no depth info in a single photo to place one
+    # honestly — but confident detections DO reduce free_space_ratio via an
+    # "area-only reservation" at persist time; see persist_real_cv_detections.
     REAL_DETECTION = "real_detection"  # YOLO bounding box
     REAL_SEGMENTATION = "real_segmentation"  # wall/floor/ceiling/window/door mask
 

@@ -5,8 +5,10 @@ import type { DetectedObjects } from "../api/types";
  * pretrained YOLO furniture detection + pretrained ADE20K architectural
  * segmentation for a genuine photo, or a sample room's labeled fixture
  * ground truth — both already unified into one shape by the backend
- * (backend/api/design.py's `_detected_objects_dict`). Display-only: nothing
- * here feeds the recommendation/layout engine yet (see PLAN.md, Batch ⑥).
+ * (backend/api/design.py's `_detected_objects_dict`). Confident furniture
+ * detections reduce the room's estimated free space for recommendations
+ * ("area-only reservation", PLAN.md) — but no detected item is ever placed
+ * at a specific position, since a single photo can't honestly provide one.
  */
 export function DetectedObjectsPanel({ detected }: { detected: DetectedObjects }) {
   if (detected.furniture.length === 0 && detected.architectural.length === 0) {
@@ -45,8 +47,8 @@ export function DetectedObjectsPanel({ detected }: { detected: DetectedObjects }
         </div>
       )}
       <p className="wizard-step__hint">
-        Detected for your information only — this design still recommends furniture for the whole room, since
-        detections aren't yet used to plan around what you already have.
+        Confident furniture detections reduce the estimated free space used when choosing what to recommend —
+        but nothing here is placed at a specific spot in your layout, since a single photo can't measure that.
       </p>
     </div>
   );

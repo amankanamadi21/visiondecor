@@ -1,9 +1,11 @@
 """
 Real furniture-instance detection for a genuine uploaded room photo
 (2026-09-08 CV batch, FR-2). A pretrained (COCO) YOLOv8n model — no
-fine-tuning, per D001's CPU-only constraint. Display-only this batch: see
-db_adapter.py for why these detections do not (yet) feed the recommendation
-engine or layout optimiser.
+fine-tuning, per D001's CPU-only constraint. This module only detects; see
+ai/room_analysis/db_adapter.py's persist_real_cv_detections for what a
+detection is and isn't allowed to affect (free_space_ratio via an
+"area-only reservation" — never a positioned "existing" object, since a
+single photo has no depth information to place one honestly).
 
 Report Issue R-07 note: standard COCO has no wall/window/door/floor
 classes — those come from segmentation.py instead, a genuinely different

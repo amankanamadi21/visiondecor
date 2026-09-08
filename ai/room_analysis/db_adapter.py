@@ -1,28 +1,57 @@
 """
 Translates between the DB rows (RoomAnalysis/DetectedObject/StylePrediction)
 and the in-memory RoomModel used by recommendation/layout_optimization —
-and back, for the dev-only fixture-seeding path.
+and back — for both the dev-only fixture path (persist_fixture) and real CV
+output (persist_real_cv_detections, 2026-09-08).
 
-This is the ONLY place that reads/writes DetectedObject.bbox as cm-based
-room coordinates. Real CV integration (not yet built) will populate pixel-
-space detections and will need its own pixel->cm reprojection step before
-storing — see Report Issue R-10 in PLAN.md — but whatever populates these
-rows, `load_room_model_from_db` doesn't care: it only requires cm-based
-fields to already be present, regardless of how they got there.
+`load_room_model_from_db` only builds existing_furniture/openings from
+cm-based DetectedObject rows (DetectionSource.DETECTION/SEGMENTATION,
+fixtures only) — real CV rows are pixel-space and deliberately excluded, per
+Report Issue R-10: a single 2D photo has no depth information, so a pixel
+bounding box cannot honestly be turned into a real (x, y) position or exact
+size. See persist_real_cv_detections for what real detections DO affect
+(free_space_ratio, "area-only reservation") versus what they still don't
+(no positioned "existing" object is ever fabricated).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai.room_analysis.room_model import FurnitureItem, Opening, RoomModel
 from ai.room_analysis.fixtures import RoomFixture
+from backend.models.catalog import FurnitureCatalogItem
 from backend.models.room import DetectedObject, DetectionSource, RoomAnalysis, RoomImage, ScaleSource
 from backend.models.session import DesignSession
 from backend.models.style import StylePrediction
 
 FIXTURE_MODEL_NAME_PREFIX = "fixture:"
+
+# Same operating point as ai.room_analysis.detection.CONFIDENCE_THRESHOLD —
+# a detection below this already isn't shown to the user, so it shouldn't
+# count toward the reserved-space estimate either (no separate, unmeasured
+# threshold invented just for this).
+RESERVATION_CONFIDENCE_THRESHOLD = 0.35
+
+# 2026-09-08 "area-only reservation" decision: a single 2D photo has no
+# depth information, so a detection's pixel bounding box cannot honestly be
+# converted into a real-world position OR size (an object's apparent pixel
+# size depends on its unknown distance from the camera) — see PLAN.md.
+# Rather than fabricate a position/size, only detection CLASSES with a
+# clearly-corresponding catalog category get a footprint estimate at all,
+# taken from the project's own real (seeded) catalog data — not a guessed
+# number. Every other detected class (tv, sink, book, clock, vase,
+# refrigerator, potted plant) remains display-only and reserves nothing.
+DETECTION_TO_CATALOG_CATEGORY = {
+    "chair": "chair",
+    "couch": "sofa",
+    "bed": "bed",
+    "dining table": "table",
+}
+
+MIN_FREE_SPACE_RATIO = 0.15  # never let noisy detections zero out all usable space
 
 
 @dataclass
@@ -106,25 +135,68 @@ def persist_fixture(db: Session, session_id: int, fixture: RoomFixture) -> RoomA
     return analysis
 
 
-def persist_real_cv_detections(db: Session, analysis_id: int, image_path: str) -> None:
+def _mean_catalog_footprint_cm2(db: Session, category: str) -> float | None:
+    result = db.execute(
+        select(FurnitureCatalogItem.width_cm, FurnitureCatalogItem.depth_cm)
+        .where(FurnitureCatalogItem.category == category)
+    ).all()
+    if not result:
+        return None
+    return sum(w * d for w, d in result) / len(result)
+
+
+def _estimate_reserved_area_cm2(db: Session, detections: list) -> float:
+    """Estimated real-world floor area already occupied by confidently-
+    detected furniture, using the mean footprint of real catalog items in
+    the corresponding category as a stand-in for the detected item's actual
+    size (see DETECTION_TO_CATALOG_CATEGORY's docstring above for why a
+    pixel bounding box can't give us that directly). Classes with no mapped
+    category contribute 0."""
+    total = 0.0
+    for det in detections:
+        if det.confidence < RESERVATION_CONFIDENCE_THRESHOLD:
+            continue
+        category = DETECTION_TO_CATALOG_CATEGORY.get(det.class_label)
+        if category is None:
+            continue
+        mean_area = _mean_catalog_footprint_cm2(db, category)
+        if mean_area:
+            total += mean_area
+    return total
+
+
+def persist_real_cv_detections(db: Session, analysis: RoomAnalysis, image_path: str) -> None:
     """Real furniture detection (ai.room_analysis.detection, pretrained COCO
     YOLO) + architectural segmentation (ai.room_analysis.segmentation,
     pretrained ADE20K SegFormer) for a genuine uploaded photo — 2026-09-08
-    CV batch, FR-2/Report Issue R-07. Display-only this batch: rows are
-    tagged DetectionSource.REAL_DETECTION/REAL_SEGMENTATION, which
-    `load_room_model_from_db` deliberately skips (see below) — they do not
-    affect recommendation or layout generation yet. That is a scoped,
-    explicit decision (2026-09-08), not an oversight; feeding real detections
-    into the optimiser as immovable existing furniture is a natural,
-    separately-decided follow-up once detection quality has been observed
-    on real photos."""
+    CV batch, FR-2/Report Issue R-07.
+
+    Detected objects are persisted as DetectionSource.REAL_DETECTION/
+    REAL_SEGMENTATION rows, which `load_room_model_from_db` deliberately
+    skips when building existing_furniture/openings — a single 2D photo
+    can't honestly provide a real (x, y) position or exact size for a
+    detected item (no depth information), so nothing here ever places a
+    positioned "existing" object in the layout. That stays true even with
+    the "area-only reservation" decision below.
+
+    What DOES change (2026-09-08, amending the original "detect & display
+    only, zero effect on generation" scope once detection quality had
+    actually been measured — see PLAN.md): confidently-detected furniture
+    with a class that maps to a real catalog category (chair, sofa, bed,
+    table) reduces `analysis.free_space_ratio` by that category's mean real
+    footprint from the actual seeded catalog — not a fabricated number, and
+    never a claimed position. This only runs when room dimensions are known
+    (needed to turn an absolute cm² reservation into a ratio); a real photo
+    with real detections but no dimensions still can't be scored at all,
+    exactly as before this decision."""
     from ai.room_analysis.detection import detect_objects
     from ai.room_analysis.segmentation import segment_architecture
 
-    for detection in detect_objects(image_path):
+    detections = detect_objects(image_path)
+    for detection in detections:
         db.add(
             DetectedObject(
-                analysis_id=analysis_id,
+                analysis_id=analysis.id,
                 class_label=detection.class_label,
                 confidence=detection.confidence,
                 source=DetectionSource.REAL_DETECTION,
@@ -136,7 +208,7 @@ def persist_real_cv_detections(db: Session, analysis_id: int, image_path: str) -
     for region in segment_architecture(image_path):
         db.add(
             DetectedObject(
-                analysis_id=analysis_id,
+                analysis_id=analysis.id,
                 class_label=region.class_label,
                 confidence=region.confidence,
                 source=DetectionSource.REAL_SEGMENTATION,
@@ -144,6 +216,18 @@ def persist_real_cv_detections(db: Session, analysis_id: int, image_path: str) -
                 area_px=region.area_px,
             )
         )
+
+    if analysis.room_width_cm is not None and analysis.room_length_cm is not None:
+        reserved_area_cm2 = _estimate_reserved_area_cm2(db, detections)
+        room_area_cm2 = analysis.room_width_cm * analysis.room_length_cm
+        if reserved_area_cm2 > 0 and room_area_cm2 > 0:
+            from ai.recommendation.scoring import DEFAULT_FREE_SPACE_RATIO
+
+            reserved_ratio = reserved_area_cm2 / room_area_cm2
+            analysis.free_space_ratio = max(
+                MIN_FREE_SPACE_RATIO, DEFAULT_FREE_SPACE_RATIO - reserved_ratio
+            )
+
     db.commit()
 
 
@@ -152,8 +236,10 @@ def load_room_model_from_db(db: Session, analysis: RoomAnalysis, room_type: str)
     furniture: list[FurnitureItem] = []
     for obj in analysis.detected_objects:
         if obj.source in (DetectionSource.REAL_DETECTION, DetectionSource.REAL_SEGMENTATION):
-            # Display-only this batch (see persist_real_cv_detections) — not
-            # yet fed into the RoomModel the recommendation/layout engine use.
+            # Never fed into existing_furniture/openings — see
+            # persist_real_cv_detections for why (no depth information in a
+            # single photo). free_space_ratio (read below) is the one real
+            # effect these rows can have, already applied at persist time.
             continue
         if obj.source == DetectionSource.SEGMENTATION and obj.class_label in ("door", "window"):
             openings.append(

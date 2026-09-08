@@ -142,10 +142,12 @@ def run_style_recognition_for_upload(
         report_progress(70)
 
         # Real furniture detection + architectural segmentation (2026-09-08
-        # CV batch, FR-2/R-07) — display-only, see db_adapter.py. Runs after
-        # the style commit above so a slow/failed CV pass never blocks the
-        # style prediction the rest of the UI depends on.
-        persist_real_cv_detections(db, analysis.id, image_path)
+        # CV batch, FR-2/R-07) — persisted for display, and reduces
+        # free_space_ratio for confidently-detected furniture (see
+        # db_adapter.py's persist_real_cv_detections). Runs after the style
+        # commit above so a slow/failed CV pass never blocks the style
+        # prediction the rest of the UI depends on.
+        persist_real_cv_detections(db, analysis, image_path)
         report_progress(100)
     finally:
         db.close()

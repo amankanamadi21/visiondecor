@@ -230,9 +230,9 @@ export function NewDesignPage() {
 
           <div className="wizard-step__honesty-note">
             If you upload your own photo, we run real style recognition and real furniture/architectural
-            detection on it (shown after upload). Detections aren't used to plan around what's already there
-            yet, though — tell us your room's size and we'll still recommend furniture for the whole room as
-            if starting fresh. Sample rooms below use labeled demo data instead of live detection.
+            detection on it (shown after upload). Confident furniture detections reduce the estimated free
+            space we recommend into, but nothing is placed at a specific spot — a single photo can't measure
+            exact positions. Sample rooms below use labeled demo data instead of live detection.
           </div>
 
           <h3>Sample rooms</h3>
@@ -307,8 +307,8 @@ export function NewDesignPage() {
           )}
           {!isSampleRoom && hasKnownDimensions && (
             <div className="wizard-step__honesty-note">
-              Detections aren't used to plan around existing furniture yet, so this design will assume the
-              room is empty and recommend furniture for everything it needs.
+              Detected furniture (below, if any) reduces the free space we plan around, but nothing is placed
+              at a specific spot in the layout — a single photo can't measure exact positions.
             </div>
           )}
           {styleResult && <DetectedObjectsPanel detected={styleResult.detected_objects} />}

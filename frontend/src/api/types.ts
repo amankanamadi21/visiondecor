@@ -100,8 +100,9 @@ export interface DetectedItem {
 }
 
 // 2026-09-08 CV batch (FR-2, Report Issue R-07) — "real_cv" for a genuine
-// photo (pretrained YOLO + ADE20K segmentation, display-only this batch:
-// see PLAN.md), "fixture_ground_truth" for a recognized sample room.
+// photo (pretrained YOLO + ADE20K segmentation; confident furniture here
+// reduces the room's estimated free space, see PLAN.md's "area-only
+// reservation" decision), "fixture_ground_truth" for a recognized sample room.
 export interface DetectedObjects {
   source: "real_cv" | "fixture_ground_truth";
   furniture: DetectedItem[];
