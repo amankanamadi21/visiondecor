@@ -832,6 +832,37 @@ across all four fixtures — a genuine, reproducible result for the report's eva
 "Not yet measured": style/detection accuracy (no real CV in this batch, per D022) and anything about the
 Gemini render path (untested — see above).
 
+## D025 completion: space-fit rate added to the recommendation study — 2026-09-08
+
+Section K names three recommendation metrics — budget compliance rate, style-match rate, space-fit rate.
+The first two were measured 2026-09-07 above; space-fit was the one genuine gap left in D025's own stated
+scope. The underlying per-item score (`score_breakdown["space_fit"]`, `ai/recommendation/scoring.py`) already
+existed — it just wasn't aggregated across a study. Extended `evaluation/run_recommendation_study.py` to
+collect it and report both a mean score and a "space-fit rate" (fraction of recommended items hitting the
+comfortable-fit ceiling, `space_fit == 1.0`, i.e. under 30% of the room's free floor area per item), plus a
+per-fixture breakdown to show where the optimizer is trading off space against other preferences.
+
+**Re-measured 2026-09-08** (same 120 synthetic preference combinations, same seeded catalog — confirms no
+regression from the D004/FR-9/Cloudflare work done since the 2026-09-07 run, since budget compliance (87.5%)
+and mean style-match (0.8857) came back byte-for-byte identical):
+
+```
+$ python -m evaluation.run_recommendation_study
+  Space-fit rate (items at the comfortable-fit ceiling, score == 1.0): 88.1%
+  Mean space-fit score (across all recommended items): 0.9749
+  Mean space-fit by fixture room:
+    bedroom_small_scandinavian    0.8837   (smallest fixture — tightest free space, as expected)
+    living_room_modern_cluttered  0.9993
+    study_room_industrial         1.0000
+    office_contemporary_empty     1.0000
+```
+
+**Section K status after this batch:** Recommendation (all 3 metrics) ✅ measured. Layout ✅ measured
+(2026-09-07). Style accuracy ✅ measured (40.16% zero-shot; 2026-09-07). Detection: still cut (D006a), stated
+honestly as out of scope, not "not yet measured" by oversight. Visualization structural-consistency/user
+rating: no user study is feasible for a solo academic project — this will be stated as an explicit scope
+limitation in the report, not silently left blank.
+
 **Frontend (item 6) — complete:** `NewDesignPage` (room type → sample-room gallery or real upload →
 preferences form → generate + poll), `DesignDetailPage` (recommendation cards with score bars/rationale/MOCK
 badge, layout score breakdown, constraint checklist, inline floor-plan SVG, visualization image with its
