@@ -337,3 +337,24 @@ a { color: var(--vd-accent-dark); }
 @media (max-width: 720px) {
   .compare-columns { grid-template-columns: 1fr; }
 }
+
+/* --- Batch 6: real CV detect & display (FR-2, Report Issue R-07) --- */
+
+.detected-objects-panel {
+  background: var(--vd-surface);
+  border: 1px solid var(--vd-border);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin: 0.8rem 0;
+  font-size: 0.9rem;
+}
+.detected-objects-panel__tag {
+  display: inline-block;
+  background: #eef4fa;
+  border: 1px solid #b8d3ea;
+  color: #1f4b6e;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  margin: 0.2rem 0.3rem 0.2rem 0;
+  font-size: 0.82rem;
+}

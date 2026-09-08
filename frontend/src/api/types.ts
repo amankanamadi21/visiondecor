@@ -94,6 +94,33 @@ export interface Recommendation {
   is_sample_room: boolean;
 }
 
+export interface DetectedItem {
+  label: string;
+  confidence: number;
+}
+
+// 2026-09-08 CV batch (FR-2, Report Issue R-07) — "real_cv" for a genuine
+// photo (pretrained YOLO + ADE20K segmentation, display-only this batch:
+// see PLAN.md), "fixture_ground_truth" for a recognized sample room.
+export interface DetectedObjects {
+  source: "real_cv" | "fixture_ground_truth";
+  furniture: DetectedItem[];
+  architectural: DetectedItem[];
+}
+
+export interface StyleResult {
+  style: {
+    predicted_style: Style;
+    confidence: number;
+    alternatives: { style: Style; confidence: number }[];
+    abstained: boolean;
+    model_name: string;
+  };
+  is_sample_room: boolean;
+  has_known_dimensions: boolean;
+  detected_objects: DetectedObjects;
+}
+
 export interface LayoutObject {
   label: string;
   x_cm: number;

@@ -2,7 +2,8 @@ import { useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import { JobProgress } from "../components/JobProgress";
-import type { DesignSession, Job, RoomImage, RoomType, Style } from "../api/types";
+import { DetectedObjectsPanel } from "../components/DetectedObjectsPanel";
+import type { DesignSession, Job, RoomImage, RoomType, Style, StyleResult } from "../api/types";
 
 type Step = "room_type" | "image_source" | "preferences" | "processing" | "generating";
 
@@ -61,6 +62,8 @@ export function NewDesignPage() {
   const [roomWidthCm, setRoomWidthCm] = useState("");
   const [roomLengthCm, setRoomLengthCm] = useState("");
   const [jobId, setJobId] = useState<number | null>(null);
+  const [styleJobId, setStyleJobId] = useState<number | null>(null);
+  const [styleResult, setStyleResult] = useState<StyleResult | null>(null);
   const [preferredStyle, setPreferredStyle] = useState<Style | "">("");
   const [colorsText, setColorsText] = useState("");
   const [budget, setBudget] = useState("");
@@ -105,6 +108,7 @@ export function NewDesignPage() {
       setIsSampleRoom(res.is_sample_room);
       setHasKnownDimensions(res.is_sample_room || Boolean(dimensions?.width && dimensions?.length));
       setJobId(res.job_id);
+      setStyleJobId(res.style_job_id);
       setStep("processing");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not upload the image.");
@@ -125,7 +129,33 @@ export function NewDesignPage() {
     uploadImage(sampleAsFile); // dimensions never sent for samples — the fixture's own always win
   }
 
-  function handlePreprocessDone(_job: Job) {
+  /** The style/detection job (style_job_id) runs independently of the
+   * preprocess job we're actually polling in the UI, and can still be in
+   * progress when preprocess finishes — waiting for it here (not just
+   * preprocess) is what makes fetching /style below reliable rather than
+   * racing a 404. Found via a real browser walkthrough, not assumed. */
+  async function waitForJobDone(id: number, timeoutMs = 30000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const res = await api.get<{ job: Job }>(`/api/jobs/${id}`);
+      if (res.job.status === "done" || res.job.status === "failed") return;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+
+  async function handlePreprocessDone(_job: Job) {
+    if (styleJobId !== null) {
+      await waitForJobDone(styleJobId);
+    }
+    if (session) {
+      try {
+        const res = await api.get<StyleResult>(`/api/sessions/${session.id}/style`);
+        setStyleResult(res);
+      } catch {
+        // Style/detection results are informational only — a fetch failure
+        // here shouldn't block the wizard from continuing.
+      }
+    }
     setStep("preferences");
   }
 
@@ -199,11 +229,10 @@ export function NewDesignPage() {
           <h2>Step 2 — Choose a room photo</h2>
 
           <div className="wizard-step__honesty-note">
-            <strong>Automatic furniture/style detection from a real photo isn't available in this build.</strong>{" "}
-            Sample rooms below show the complete pipeline including existing-furniture detection. If you
-            upload your own photo instead, style recognition still runs for real — but since we can't detect
-            existing furniture yet, tell us your room's size and we'll treat it as empty and recommend
-            everything needed for it.
+            If you upload your own photo, we run real style recognition and real furniture/architectural
+            detection on it (shown after upload). Detections aren't used to plan around what's already there
+            yet, though — tell us your room's size and we'll still recommend furniture for the whole room as
+            if starting fresh. Sample rooms below use labeled demo data instead of live detection.
           </div>
 
           <h3>Sample rooms</h3>
@@ -278,10 +307,11 @@ export function NewDesignPage() {
           )}
           {!isSampleRoom && hasKnownDimensions && (
             <div className="wizard-step__honesty-note">
-              Since we can't detect existing furniture in your photo yet, this design will assume the room is
-              empty and recommend furniture for everything it needs.
+              Detections aren't used to plan around existing furniture yet, so this design will assume the
+              room is empty and recommend furniture for everything it needs.
             </div>
           )}
+          {styleResult && <DetectedObjectsPanel detected={styleResult.detected_objects} />}
           <label>
             Preferred style
             <select value={preferredStyle} onChange={(e) => setPreferredStyle(e.target.value as Style)} required>

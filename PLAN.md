@@ -1170,6 +1170,45 @@ Segmentation (wall/floor/ceiling/window/door) has no equivalent quantitative stu
 ground-truth segmentation masks would be needed for that, a separate (larger) undertaking not in this
 batch's scope; only detection was quantitatively evaluated, matching what was actually decided above.
 
+### Frontend: `DetectedObjectsPanel` + two real bugs found via a genuine browser walkthrough — 2026-09-08
+
+The backend's `detected_objects` field (above) had no frontend consumer yet — `_detected_objects_dict` was
+built but nothing displayed it, and two disclosure strings (`NewDesignPage`'s Step 2 note, `DesignDetailPage`'s
+sample-room badge) still read *"Automatic furniture/style detection... isn't available in this build"* and
+*"existing-furniture detection isn't implemented yet"* — both **factually false** as of this batch and D005,
+a real violation of the project's own provenance-honesty rule that had gone unnoticed because nothing had
+re-read that copy since it was written. Added `DetectedObjectsPanel` (new component), wired into both
+`NewDesignPage` (Step 3, right after upload) and `DesignDetailPage`, and corrected both disclosure strings.
+
+**This was the first full, real browser walkthrough of this feature** (Playwright + Chromium, driving the
+actual running Flask + Vite dev servers — register, upload a real photo, watch it through to a generated
+design) since Batch ③'s walkthrough on 2026-09-07, which predates D004, FR-9, Cloudflare, and this CV batch
+entirely. It surfaced two real, previously-undiscovered bugs that no API-level test or curl check could have
+caught:
+
+1. **A style-job race in the upload wizard.** `NewDesignPage` transitioned to the preferences step as soon as
+   the *preprocess* job finished — but style recognition + the new CV detection/segmentation run as a
+   separate, independently-scheduled job (`style_job_id`) that can still be in progress at that moment. The
+   panel's first fetch of `/style` landed before the row existed and came back empty. Pre-existing risk (the
+   preprocess/style split has been there since Batch ④), only visible now because this was the first UI code
+   ever built to actually depend on the style job's completion timing. Fixed by waiting on `style_job_id`
+   (polling `/api/jobs/<id>`) before transitioning, not just the preprocess job.
+2. **The generated-visualization `<img>` has been broken in the browser since it was first built** (`git log`
+   traces the line to the initial-implementation commit). `image_url` is backend-relative
+   (`/api/sessions/.../image`); with the frontend (Vite, :5173) and backend (Flask, :5000) on different
+   origins in dev, a bare `<img src=...>` resolves against :5173 and silently 404s — invisible to every prior
+   verification of Gemini/Cloudflare rendering, because those were all done via direct `curl`/API calls
+   against the backend, never through the actual page. Fixed by prefixing with the api client's `API_BASE`
+   (now exported). **Every previous "photorealistic render confirmed" claim in this log was true of the
+   generation pipeline and the raw image bytes — just never previously true of what a user's browser actually
+   displayed.** Re-verified visually after the fix: the real Cloudflare-generated image now renders correctly
+   on the design detail page.
+
+`npx tsc --noEmit` clean, `npm run build` succeeds, `oxlint` shows only pre-existing warnings (none from this
+batch's changes). No frontend test runner exists in this project (`git log`/`package.json` confirm — visual +
+type-check + build has been the verification method for every frontend change so far); verification here was
+the Playwright walkthrough itself, screenshots inspected directly.
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)
