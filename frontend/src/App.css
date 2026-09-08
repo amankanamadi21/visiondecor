@@ -358,3 +358,22 @@ a { color: var(--vd-accent-dark); }
   margin: 0.2rem 0.3rem 0.2rem 0;
   font-size: 0.82rem;
 }
+
+/* --- FR-10: export a design as PDF via the browser's print-to-PDF --- */
+
+.design-detail-page__toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+@media print {
+  /* Disclosure badges, MOCK DATA labels, and provenance notes are content,
+     not chrome — never hidden here. Only interactive/navigational elements
+     that mean nothing on a printed page are stripped. */
+  .design-detail-page__no-print { display: none !important; }
+  .recommendation-card, .visualization-view, .floorplan-view {
+    break-inside: avoid;
+  }
+}

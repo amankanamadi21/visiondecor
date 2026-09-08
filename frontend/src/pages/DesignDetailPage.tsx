@@ -67,7 +67,14 @@ export function DesignDetailPage() {
 
   return (
     <div className="design-detail-page">
-      <Link to="/dashboard">&larr; Back to dashboard</Link>
+      <div className="design-detail-page__toolbar design-detail-page__no-print">
+        <Link to="/dashboard">&larr; Back to dashboard</Link>
+        {session.status === "ready" && (
+          <button type="button" onClick={() => window.print()}>
+            Export as PDF
+          </button>
+        )}
+      </div>
       <h1>{session.title ?? session.room_type ?? `Design #${session.id}`}</h1>
       <p>
         Status: <strong>{session.status}</strong>
@@ -116,10 +123,10 @@ export function DesignDetailPage() {
             {" · iteration "}
             {recommendation.iteration}
             {recommendation.iteration > 1 && (
-              <>
+              <span className="design-detail-page__no-print">
                 {" · "}
                 <Link to={`/designs/${sessionId}/compare`}>Compare with a previous iteration</Link>
-              </>
+              </span>
             )}
           </p>
           <div className="recommendation-list">
@@ -186,7 +193,11 @@ export function DesignDetailPage() {
         </section>
       )}
 
-      {session.status === "ready" && <FeedbackBox sessionId={sessionId} onRefined={load} />}
+      {session.status === "ready" && (
+        <div className="design-detail-page__no-print">
+          <FeedbackBox sessionId={sessionId} onRefined={load} />
+        </div>
+      )}
     </div>
   );
 }

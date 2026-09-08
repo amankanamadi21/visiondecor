@@ -1266,6 +1266,31 @@ remain purely cosmetic. No position is ever assigned, so a floor plan still can'
 sofa/chair/bed/table actually is — only that the room has less free space than assumed. Confidence-gated,
 user-confirmed real geometry (the rejected option above) remains the honest path to that, if ever wanted.
 
+## FR-10: Export a design as PDF — 2026-09-08
+
+Implied-but-unstated FR from §C, never built until now. Two forks decided explicitly before writing code:
+**export mechanism** — PDF only (not a shareable public link, which would open a genuinely new privacy
+surface: exposing a user's design to anyone with a URL, the same class of NFR-3 concern already flagged for
+third-party render APIs — deferred, not ruled out) — and **PDF approach** — client-side print-to-PDF (the
+browser's native print dialog against a print-tuned view), not a server-rendered PDF, matching this project's
+low-cost/free bias and requiring zero new dependencies.
+
+**Built:** an "Export as PDF" button on `DesignDetailPage` (calls `window.print()`) plus `@media print` CSS
+hiding only interactive/navigational chrome — the toolbar, "Compare with a previous iteration" link, and the
+feedback form. **Every disclosure/provenance element stays visible in the export on purpose**: sample-room
+and real-photo badges, `MOCK DATA` price labels, the Cloudflare/Gemini structure-preserving caveat, and the
+"no visualization available" honesty note — an export that quietly dropped these would misrepresent the
+design the same way a UI that hid them would, so the print rule only targets elements with zero informational
+content (nav links, forms).
+
+**Live-verified**: generated a design through the real app, confirmed the button appears only once a design
+is `ready`, emulated print media and confirmed the toolbar/feedback form become invisible while a `MOCK DATA`
+badge stays visible, then rendered an actual PDF via Playwright's `page.pdf()` (254KB) and a full-page
+print-mode screenshot — both inspected directly, not just asserted in code. `tsc --noEmit` clean.
+
+**What's still NOT solved:** a shareable public link (the other FR-10 reading) remains undecided/unbuilt —
+deliberately deferred pending its own privacy-model decision, not forgotten.
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)
