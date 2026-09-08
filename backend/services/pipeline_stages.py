@@ -333,6 +333,7 @@ def _attempt_visualization(db, layout, analysis, loaded, rec_result, design_sess
         os.environ.get("GEMINI_API_KEY", "").strip() or None,
         os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip() or None,
         os.environ.get("CLOUDFLARE_API_TOKEN", "").strip() or None,
+        os.environ.get("HUGGINGFACE_API_TOKEN", "").strip() or None,
     )
     if not providers:
         return  # no provider configured — expected default state, not an error

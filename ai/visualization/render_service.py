@@ -65,14 +65,15 @@ def build_default_providers(
     gemini_api_key: str | None,
     cloudflare_account_id: str | None = None,
     cloudflare_api_token: str | None = None,
+    huggingface_api_token: str | None = None,
 ) -> list[RenderProvider]:
     """Gemini first (genuine image editing, structure-preserving — see
-    GeminiImageProvider), Cloudflare second (text-to-image only, verified
-    NOT structure-preserving — see CloudflareImageProvider's docstring for
-    exactly what was tested and why). HuggingFace remains undesigned beyond
-    D003's original chain (not implemented) — the chain degrades to 'no
-    photorealistic render, floor plan only' gracefully when nothing is
-    configured or every configured provider fails."""
+    GeminiImageProvider), then Cloudflare, then Hugging Face (both
+    text-to-image only, verified NOT structure-preserving — see each
+    provider's own docstring for exactly what was tested and why). The
+    chain degrades to 'no photorealistic render, floor plan only'
+    gracefully when nothing is configured or every configured provider
+    fails."""
     providers: list[RenderProvider] = []
     if gemini_api_key:
         from ai.visualization.providers.gemini import GeminiImageProvider
@@ -82,4 +83,8 @@ def build_default_providers(
         from ai.visualization.providers.cloudflare import CloudflareImageProvider
 
         providers.append(CloudflareImageProvider(cloudflare_account_id, cloudflare_api_token))
+    if huggingface_api_token:
+        from ai.visualization.providers.huggingface import HuggingFaceImageProvider
+
+        providers.append(HuggingFaceImageProvider(huggingface_api_token))
     return providers

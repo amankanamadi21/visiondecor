@@ -1384,6 +1384,79 @@ could give: the whole point of the feature, actually observed.
 **What's still NOT solved:** only the 4 already-mapped classes can be confirmed; a shareable public
 link remains a deliberate non-goal (see above), not a gap.
 
+## Hugging Face — the third D003 fallback provider — 2026-09-08
+
+The one remaining named-but-unbuilt piece of the original render-provider chain
+(Gemini → Cloudflare → Hugging Face → cache → floor plan). Offered several times across this
+project, always deprioritized since Cloudflare already covers the free-tier gap Gemini's quota
+left — finally picked up as part of "complete everything left."
+
+**Real API research, not memory** (`.env` had `HUGGINGFACE_API_TOKEN=` blank — the user obtained a
+real free token specifically so this could be verified live, the same standard Gemini and
+Cloudflare were held to): the classic `api-inference.huggingface.co/models/<id>` endpoint returned
+an HTML login page, not a clean API error — a real, if confusing, signal that HF's Inference API
+has moved on since this project's original D003 research. Queried the model's own
+`inferenceProviderMapping` live and found `hf-inference` isn't even a live provider for
+FLUX.1-schnell anymore; a direct call to that route returned **410 Gone** ("model is deprecated").
+The actual working route, found and confirmed with a real authenticated call that produced and was
+visually inspected as a genuine photorealistic bedroom:
+
+```
+POST https://router.huggingface.co/nscale/v1/images/generations
+{"model": "black-forest-labs/FLUX.1-schnell", "prompt": "..."}
+-> 200 {"created": ..., "data": [{"b64_json": "<base64 PNG>"}]}
+```
+
+An OpenAI-Images-API-compatible shape via HF's multi-provider "router" (nscale is one of several
+providers HF can route this model to — fal-ai and wavespeed were also listed as live but not tried,
+since nscale worked on the first attempt). Error shape confirmed too: `{"error": "<message>"}` with
+a non-200 status (400 for an unsupported model, 401 for a bad token) — simpler than Cloudflare's
+nested `{"success": false, ...}`.
+
+**Built:** `ai/visualization/providers/huggingface.py` (`HuggingFaceImageProvider`,
+`structure_preserving = False` — verified, text-to-image only, same disclosure reasoning as
+Cloudflare), wired into `build_default_providers()` (now takes `huggingface_api_token`) and
+`pipeline_stages.py`'s `_attempt_visualization()`. No new dependency (`requests` already present).
+
+**Tests:** 8 in `tests/test_huggingface_provider.py`, mirroring the Cloudflare provider's test
+shape exactly, including applying the same `load_dotenv()`-at-module-level fix up front (a real
+pytest `skipif`-collection-time bug found and fixed in the Cloudflare tests earlier this project —
+applied here from the start rather than rediscovered). **128/128 tests passing.**
+
+**Live-verified twice**: once directly against the provider class (produced and viewed a real
+photorealistic living room), and once through the actual `render_with_fallback` pipeline with only
+`HUGGINGFACE_API_TOKEN` configured (forcing the chain to actually reach it, since Cloudflare would
+otherwise serve the request first) — produced and viewed a real photorealistic bedroom, confirming
+the fallback chain doesn't just fail over correctly in the abstract (already covered by
+`test_visualization.py`) but that this specific provider works when it's the one actually reached.
+
+## Full-system demo-readiness pass — 2026-09-08
+
+Not a new feature — a single continuous, timed Playwright walkthrough of the actual path a viva
+demo would follow: register → upload a real photo with dimensions → style + CV detection →
+generate → confirm a detected item's real geometry (results page) → automatic regenerate →
+feedback ("make it more industrial") → refine → compare iterations → print/export check →
+dashboard → logout/login.
+
+**Timings observed** (real network calls throughout, nothing mocked): register 0.3s, upload
+through detection+segmentation done 1.5s, full generate (recommendation + layout + a real external
+image-generation call) 15.3s, feedback-driven refine 12.7s, compare page load 0.1s. All
+presentable live; nothing in the critical path is slow enough to awkwardly stall a demo.
+
+**Coherence checked across the whole chain, not just each screen in isolation**: the confirmed
+couch's position was identical across iteration 2 (post-geometry-confirm) and iteration 3
+(post-feedback) on the compare page — confirming confirmed geometry persists correctly across
+refinements, not just the one generation it was confirmed during. The style-shift feedback
+correctly re-styled every recommended item to Industrial while leaving the confirmed couch
+untouched (it's real existing furniture, not a recommendation — the same distinction already
+exercised by fixture rooms). No unexpected error banners at any step; the only console errors were
+the same benign pre-login 401 probe seen throughout this entire project.
+
+**No new findings** — everything held up. Recorded here because a clean pass is still a result: it
+confirms the many individual fixes made across this session (the style-job race, the broken
+visualization image, the raw-JSON feedback message) actually compose correctly end-to-end, not just
+in isolation.
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)

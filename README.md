@@ -81,15 +81,20 @@ project's own design):
 |---|---|---|
 | Gemini (`GEMINI_API_KEY`) | Free tier currently grants 0 image-generation quota (a policy change discovered live, 2026-09-07) — implemented and wired correctly, not currently usable without billing | Yes — real image editing |
 | Cloudflare Workers AI (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`) | 10,000 free "neurons"/day, no card | No — text-to-image only; the UI discloses this per-render |
+| Hugging Face (`HUGGINGFACE_API_TOKEN`) | Free tier, no card | No — text-to-image only; same disclosure |
+
+Tried in that order; the first one configured and working serves the request, so having all three
+configured just makes the render path more resilient, not different in kind.
 
 ## Verifying it
 
 ```bash
 source .venv/bin/activate
-pytest                               # 120 tests: auth, uploads, jobs, style recognition,
+pytest                               # 128 tests: auth, uploads, jobs, style recognition,
                                       # RAG recommendation, layout optimization, real CV
                                       # detection/segmentation, user-confirmed geometry,
-                                      # visualization fallback, feedback loop, comparison
+                                      # visualization fallback (Gemini/Cloudflare/HF),
+                                      # feedback loop, comparison
 
 cd frontend && npx tsc --noEmit      # frontend type-checks cleanly
 cd frontend && npm run build         # production build succeeds
