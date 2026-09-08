@@ -169,17 +169,19 @@ export interface IterationSummary {
   item_count: number;
 }
 
+export interface StructuredDeltas {
+  keep_item_ids: number[];
+  remove_item_ids: number[];
+  style_shift: Style | null;
+  budget_delta: number | null;
+  crowding_shift: "less" | "more" | null;
+  notes: string;
+}
+
 export interface FeedbackEntry {
   id: number;
   raw_text: string;
-  structured_deltas: {
-    keep_item_ids: number[];
-    remove_item_ids: number[];
-    style_shift: Style | null;
-    budget_delta: number | null;
-    crowding_shift: "less" | "more" | null;
-    notes: string;
-  };
+  structured_deltas: StructuredDeltas;
   rating: number | null;
   created_at?: string;
 }

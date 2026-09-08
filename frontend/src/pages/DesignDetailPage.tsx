@@ -193,9 +193,14 @@ export function DesignDetailPage() {
         </section>
       )}
 
-      {session.status === "ready" && (
+      {session.status === "ready" && recommendation && (
         <div className="design-detail-page__no-print">
-          <FeedbackBox sessionId={sessionId} onRefined={load} />
+          <FeedbackBox
+            sessionId={sessionId}
+            onRefined={load}
+            items={recommendation.items}
+            currency={session.currency}
+          />
         </div>
       )}
     </div>

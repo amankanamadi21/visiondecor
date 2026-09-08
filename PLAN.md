@@ -1291,6 +1291,31 @@ print-mode screenshot — both inspected directly, not just asserted in code. `t
 **What's still NOT solved:** a shareable public link (the other FR-10 reading) remains undecided/unbuilt —
 deliberately deferred pending its own privacy-model decision, not forgotten.
 
+## Extended browser QA pass — 2026-09-08
+
+The last two walkthroughs each caught a real bug from the design/new-design pages alone; offered twice before
+and deferred in favor of bigger features both times. This pass covered everything not yet checked in a real
+browser since its own last major change: the feedback/refinement flow, the dashboard (empty and populated),
+`CompareDesignsPage` (FR-9, built 2026-09-08, never browser-tested), and the full logout/login round-trip.
+
+**One real finding:** `FeedbackBox`'s "Understood: ..." confirmation was rendering the raw
+`structured_deltas` object via `JSON.stringify` — e.g. `{"budget_delta":-12000,"crowding_shift":null,
+"keep_item_ids":[],...}` — directly to the user, including internal field names and `catalog_item_id`
+integers with no name attached. Out of step with the rest of the app, which translates everything into
+prose. Fixed with a `describeDeltas()` translator producing sentences like *"Reducing budget by INR 12,000."*
+or *"Keeping: Old Sofa. Removing: CRT-era TV Stand."* — item ids resolved to real names via the current
+recommendation's items (now passed into `FeedbackBox` as a prop, along with `currency`). Falls back to an
+honest *"No specific change was detected..."* when every delta field is empty, rather than an empty message.
+
+**A near-finding**, ruled out: the QA script's first pass showed the applied-deltas confirmation as never
+appearing — investigated with a network-response-gated recheck script rather than assumed, and confirmed it
+was a race in the TEST (checking 300ms after clicking submit, before the feedback-parsing request had
+actually resolved), not an app bug. Recorded because "the test looked wrong so I ignored it" would have been
+the wrong instinct — the recheck is what actually established which side the bug was on.
+
+Dashboard, compare page, and the logout/login round-trip all rendered and behaved correctly — no other
+findings. `tsc --noEmit` clean, `npm run build` succeeds, `oxlint` unchanged (same 2 pre-existing warnings).
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)
