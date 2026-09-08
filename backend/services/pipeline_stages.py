@@ -311,7 +311,11 @@ def _attempt_visualization(db, layout, analysis, loaded, rec_result, design_sess
     if original_path.startswith("FIXTURE:") or not os.path.exists(original_path):
         return  # dev-script-only fixture (scripts/seed_fixture_analysis.py) — no real photo bytes to edit
 
-    providers = build_default_providers(os.environ.get("GEMINI_API_KEY", "").strip() or None)
+    providers = build_default_providers(
+        os.environ.get("GEMINI_API_KEY", "").strip() or None,
+        os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip() or None,
+        os.environ.get("CLOUDFLARE_API_TOKEN", "").strip() or None,
+    )
     if not providers:
         return  # no provider configured — expected default state, not an error
 

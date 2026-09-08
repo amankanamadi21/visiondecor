@@ -1033,6 +1033,62 @@ were already comfortably under the reduced budget).
 and confirmed each returned its own distinct data, with the no-param default correctly returning latest.
 4 new backend tests. **96/96 tests passing.**
 
+## D003 amendment: Cloudflare Workers AI added as second render provider — 2026-09-08
+
+Gemini (`gemini-3.1-flash-image`, the current stable image model as of this date — `gemini-2.5-flash-image`
+is deprecated) returned zero free-tier quota (`RESOURCE_EXHAUSTED, limit: 0`) on the account actually
+available, confirmed genuinely account-level (a plain-text call to `gemini-3.6-flash` on the same key
+succeeded). Rather than enable billing, added **Cloudflare Workers AI** as the second link in D003's
+originally-planned fallback chain (`Gemini → Cloudflare → HuggingFace → cache → floor plan`; HuggingFace
+remains unimplemented — the chain degrades gracefully without it).
+
+**Real research, not documentation-trusted:** Cloudflare's own docs pages did not clearly state the img2img
+response schema (JS-rendered schema viewer, didn't render into fetched markdown). Resolved by making actual
+API calls: the dedicated img2img model returned **HTTP 403** ("This account is not allowed to access...");
+SDXL rejected an `image_b64` input entirely (**400**, "input tensor `image` is not present in the model" —
+contradicting marketing copy claiming it can "modify images based on text prompts"); Flux
+(`@cf/black-forest-labs/flux-1-schnell`) **works**, is genuinely text-to-image only, and returns
+`{"result": {"image": "<base64 JPEG>"}, "success": true}`.
+
+**Consequence for D003's disclosure requirement:** `CloudflareImageProvider.structure_preserving = False` —
+verified, not assumed. Unlike Gemini (true image editing — original photo in, edited photo out), Cloudflare
+generates a fresh image from the text prompt alone and cannot be relied on to preserve the actual room's
+windows, doors, or layout. The API already surfaces this per-render (`visualization.structure_preserving` in
+`GET /layout`); the frontend's existing disclosure UI (built under D003) needed no changes — it already
+renders whatever the backend reports.
+
+**Built:** `ai/visualization/providers/cloudflare.py` (`CloudflareImageProvider`), wired into
+`build_default_providers()` in `render_service.py` (now takes optional `cloudflare_account_id`/
+`cloudflare_api_token`) and into `pipeline_stages.py`'s `_attempt_visualization()` (reads
+`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` from the environment). `requests==2.34.2` added to
+`backend/requirements.txt` (Cloudflare's REST API, unlike Gemini's SDK, has no official Python client).
+
+**Test-design bug caught and fixed:** the new live-network test (`test_real_live_call_produces_a_valid_image`
+in `tests/test_cloudflare_provider.py`) originally called `load_dotenv()` only inside the test body, while its
+`@pytest.mark.skipif` condition read `os.environ` — pytest evaluates `skipif` at collection time, before any
+test body runs, so the live test would have **always skipped**, even with real credentials present in
+`.env`, silently defeating its own purpose. Fixed by moving `load_dotenv()` to module level. 8 tests total
+(7 mocked: missing-credentials, successful-decode, non-200, success-false-with-200, malformed-JSON,
+network-exception, `structure_preserving is False`; 1 real live network call, credential-gated). **104/104
+tests passing** (96 pre-existing + 8 new), confirmed after the fix.
+
+**Live-verified end-to-end**, the first real generative render produced through the actual running
+application (not a standalone script): started the Flask server against the real Postgres instance,
+registered a user, created a session, uploaded a real (non-fixture) photo with `room_width_cm=420`/
+`room_length_cm=520`, set preferences (style Modern, budget ₹150,000), ran `generate` to completion, fetched
+`GET /layout` — layout score 0.846, all 5 hard constraints satisfied — and `visualization` reported
+`{"provider": "cloudflare", "structure_preserving": false}`. Fetched the actual image via
+`GET /sessions/<id>/visualization/<id>/image` (591KB, real JPEG, HTTP 200) and visually inspected it: a
+genuinely photorealistic modern living room matching the recommended items (sectional sofa, glass coffee
+table, rug, floor lamp, wall art) and the requested white/beige palette — and, as correctly disclosed, bearing
+no resemblance to the plain uploaded placeholder photo's actual layout, confirming `structure_preserving:
+false` is not just a label but an observed, real limitation of this provider.
+
+**What's still NOT solved:** Hugging Face Inference (third link in the original D003 chain) remains
+unimplemented — not currently needed since Cloudflare covers the "no billing" gap Gemini's quota left. Real
+image editing (structure-preserving generation for a non-Gemini path) remains unsolved; the honest fallback
+for a real photo when both Gemini and Cloudflare are unavailable is still the deterministic floor plan only.
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)

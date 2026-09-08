@@ -61,14 +61,25 @@ def render_with_fallback(
     return None
 
 
-def build_default_providers(gemini_api_key: str | None) -> list[RenderProvider]:
-    """Only Gemini is implemented so far (Batch 3 scope reduction — see
-    PLAN.md: Cloudflare/HF fallbacks deferred, each provider needs its own
-    account/key and D003's fallback chain degrades to 'no photorealistic
-    render, floor plan only' gracefully in the meantime)."""
+def build_default_providers(
+    gemini_api_key: str | None,
+    cloudflare_account_id: str | None = None,
+    cloudflare_api_token: str | None = None,
+) -> list[RenderProvider]:
+    """Gemini first (genuine image editing, structure-preserving — see
+    GeminiImageProvider), Cloudflare second (text-to-image only, verified
+    NOT structure-preserving — see CloudflareImageProvider's docstring for
+    exactly what was tested and why). HuggingFace remains undesigned beyond
+    D003's original chain (not implemented) — the chain degrades to 'no
+    photorealistic render, floor plan only' gracefully when nothing is
+    configured or every configured provider fails."""
     providers: list[RenderProvider] = []
     if gemini_api_key:
         from ai.visualization.providers.gemini import GeminiImageProvider
 
         providers.append(GeminiImageProvider(gemini_api_key))
+    if cloudflare_account_id and cloudflare_api_token:
+        from ai.visualization.providers.cloudflare import CloudflareImageProvider
+
+        providers.append(CloudflareImageProvider(cloudflare_account_id, cloudflare_api_token))
     return providers
