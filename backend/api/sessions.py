@@ -9,6 +9,8 @@ never be able to fetch the first user's session by guessing its id.
 """
 from __future__ import annotations
 
+import os
+
 from flask import Blueprint, g, jsonify, request
 
 from backend.db import get_session
@@ -123,3 +125,39 @@ def update_session_preferences(session_id: int):
 
     db.commit()
     return jsonify({"session": _session_dict(design_session)})
+
+
+@bp.delete("/<int:session_id>")
+@login_required
+def delete_session(session_id: int):
+    """2026-09-09: deletes a design permanently. The DB side is a single
+    cascading delete (every child table's FK is ondelete=CASCADE from
+    design_sessions down through images/analyses/recommendations/layouts/
+    visualizations/feedback/jobs) — but that cascade never touches the
+    filesystem, so uploaded/processed photos and generated visualization
+    images are collected and removed explicitly first, or they'd become
+    permanently orphaned disk space with no DB row pointing at them."""
+    db = get_session()
+    design_session = get_owned_session(db, session_id, g.user.id)
+
+    file_paths: list[str] = []
+    for room_image in design_session.images:
+        if room_image.original_path and not room_image.original_path.startswith("FIXTURE:"):
+            file_paths.append(room_image.original_path)
+        if room_image.processed_path:
+            file_paths.append(room_image.processed_path)
+    for recommendation in design_session.recommendations:
+        for layout in recommendation.layouts:
+            for visualization in layout.visualizations:
+                file_paths.append(visualization.image_path)
+
+    db.delete(design_session)
+    db.commit()
+
+    for path in file_paths:
+        try:
+            os.remove(os.path.abspath(path))
+        except OSError:
+            pass  # already missing, or a permissions quirk — the DB row is gone either way, don't fail the request over a stray file
+
+    return "", 204

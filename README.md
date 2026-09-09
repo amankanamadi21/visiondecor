@@ -5,8 +5,8 @@ Context-Aware AI Interior Design Recommendation System with Layout Optimization.
 This repo was built incrementally, one approved decision at a time — see `PLAN.md` for the
 full project decision log, architecture, and report-inconsistency tracking. Every AI-driven
 number in this project is either measured (and reproducible via the scripts in `evaluation/`),
-clearly labeled `estimated`/`user-provided`, or clearly labeled `MOCK` — nothing is presented as
-more certain than it actually is.
+clearly labeled `estimated`/`user-provided`, or (for anything still a placeholder) clearly labeled
+`MOCK` — nothing is presented as more certain than it actually is.
 
 **Current status: the full pipeline is implemented and tested end-to-end.** Real photo upload →
 real furniture detection + architectural segmentation → real zero-shot style recognition → a
@@ -40,7 +40,7 @@ cp frontend/.env.example frontend/.env
 # 3. Database
 docker compose up -d db
 alembic upgrade head
-python scripts/seed_catalog.py       # furniture catalog (data_source='MOCK' on every row)
+python scripts/seed_catalog.py       # furniture catalog (30 real products, data_source='REAL')
 python scripts/seed_principles.py    # design-principles corpus + embeddings, for RAG rationale
 
 # 4. Frontend
@@ -70,6 +70,41 @@ key is configured, otherwise the always-available deterministic floor plan) → 
 detected item's real size/position to place it for real in the layout → submit feedback in plain
 English to get a refined iteration → compare iterations side by side → export the finished design
 as a PDF.
+
+Only running one command at a time? Background the backend in the same terminal instead of using
+two:
+
+```bash
+source .venv/bin/activate
+FLASK_APP=backend.app:create_app flask run --port 5000 &
+cd frontend && npm run dev -- --port 5173
+```
+
+### Running it via Docker (backend + frontend, alongside the existing `db` service)
+
+```bash
+docker compose up --build
+# first run only, once containers are up:
+docker compose exec backend alembic upgrade head
+docker compose exec backend python scripts/seed_catalog.py
+docker compose exec backend python scripts/seed_principles.py
+```
+
+Same URLs as above (`:5173` frontend, `:5000` backend). Source is bind-mounted into both
+containers, so code changes still hot-reload without a rebuild — only changing
+`requirements.txt`/`package.json` needs `--build` again. Pretrained model weights persist across
+container restarts via named volumes (`visiondecor_hf_cache`, `visiondecor_torch_cache`,
+`visiondecor_ultralytics_config`), so they aren't re-downloaded every time.
+
+**Honesty note:** the `docker-compose.yml`/`Dockerfile` setup is verified for structure and
+correctness (`docker compose config` resolves `DATABASE_URL` to the `db` service correctly; the
+frontend image builds and serves real content) — but the backend image's build has not been
+verified to fully complete on this project's development machine, where `pip install`'s download
+of large ML dependencies (torch et al.) repeatedly stalled inside Docker Desktop's VM specifically
+(the same packages install fine in a local venv — see PLAN.md for the full account). If
+`docker compose build backend` stalls for you too, restarting Docker Desktop often clears this
+class of VM networking issue; otherwise fall back to the venv + npm instructions above, which are
+fully verified.
 
 ### Render providers (optional, decision D003)
 
@@ -137,8 +172,16 @@ datasets/   gitignored — evaluation datasets (Houzz styles, COCO subset), down
 
 - **Job runner** is a single-process thread pool, not a real queue (Redis/RQ) — a stated
   limitation against the report's NFR-5 (Scalability), not silently presented as production-scale.
-- **`furniture_catalog` rows are mock data** — every row has `data_source='MOCK'`, enforced by the
-  model default and checked in the seed script.
+- **`furniture_catalog` rows are real, purchasable products** (`data_source='REAL'`), manually
+  researched from real Indian retailers (IKEA India, Urban Ladder, Pepperfry, Home Centre, Wakefit,
+  Obeetee, Homesake, Amazon.in) — real price, real dimensions, real product link, each stamped
+  `price_verified_at` so a stale price reads as stale, not as live. 11 of 30 items are the closest
+  in-stock real match rather than an exact match to the original concept, or have one
+  retailer-unstated dimension estimated — every such deviation is flagged inline in
+  `scripts/seed_catalog.py` and in `PLAN.md`, never silently substituted. One deliberate exception:
+  `image_url` is still a placeholder stock photo, not a hotlinked retailer photo (avoids third-party
+  image ToS/copyright issues) — the "View real product ↗" link, not the thumbnail, is what actually
+  points at the genuine item.
 - **A detection's pixel bounding box alone never becomes a real position or size** — a single 2D
   photo has no depth information to derive one honestly. By default, confidently-detected chair/
   couch/bed/table items only reduce the estimated free floor space (using the catalog's own real

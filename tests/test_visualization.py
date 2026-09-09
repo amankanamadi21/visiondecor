@@ -119,3 +119,72 @@ def test_cache_key_differs_by_prompt_and_provider():
     k2 = cache_key(b"photo", "prompt B", "gemini")
     k3 = cache_key(b"photo", "prompt A", "cloudflare")
     assert len({k1, k2, k3}) == 3
+
+
+def test_visualization_image_endpoint_serves_a_relative_path_correctly(app, client, csrf_headers):
+    """Regression test (2026-09-09): GET .../visualization/<id>/image used
+    `send_file(visualization.image_path, ...)` directly. Flask's send_file
+    resolves a relative path against `app.root_path` (backend/), NOT the
+    process's actual working directory (the repo root, per this project's
+    documented run command) — silently 404ing whenever they differ. No test
+    exercised this endpoint before, and every manual verification this
+    session happened to start Flask from backend/ (making root_path == cwd
+    by coincidence), so the bug went unnoticed until a user correctly
+    followed the README and ran it from the repo root. Writes the image at
+    a RELATIVE path (as pre-fix code always did) to prove the read-side fix
+    (os.path.abspath in get_visualization_image) handles it regardless of
+    cwd, not just newly-written absolute-path rows."""
+    import os
+
+    from sqlalchemy.orm import Session
+
+    from backend.db import get_engine
+    from backend.models.layout import Layout
+    from backend.models.recommendation import Recommendation
+    from backend.models.session import DesignSession
+    from backend.models.visualization import Visualization
+
+    _register_and_login(client)
+    session_resp = client.post("/api/sessions", json={"room_type": "bedroom"}, headers=csrf_headers())
+    session_id = session_resp.json["session"]["id"]
+
+    db = Session(get_engine())
+    design_session = db.get(DesignSession, session_id)
+    recommendation = Recommendation(
+        session_id=session_id, iteration=1, total_cost=1000, budget=2000, within_budget=True
+    )
+    db.add(recommendation)
+    db.flush()
+    layout = Layout(
+        recommendation_id=recommendation.id, layout_score=0.8, score_breakdown={}, constraints_satisfied={},
+        algorithm="simulated_annealing", iterations=100,
+    )
+    db.add(layout)
+    db.flush()
+
+    real_image_bytes = b"\xff\xd8\xff\xe0fake-jpeg-bytes-for-this-test"
+    # A relative path that does NOT exist under backend/ — proves resolution
+    # happens against cwd (repo root), not app.root_path, without touching
+    # the real generated/ tree.
+    relative_image_path = f"./_test_visualization_tmp/layout_{layout.id}.jpg"
+    abs_dir = os.path.dirname(os.path.abspath(relative_image_path))
+    os.makedirs(abs_dir, exist_ok=True)
+    with open(os.path.abspath(relative_image_path), "wb") as f:
+        f.write(real_image_bytes)
+
+    visualization = Visualization(
+        layout_id=layout.id, provider="cloudflare", image_path=relative_image_path,
+        prompt_used="test prompt", structure_preserving=False,
+    )
+    db.add(visualization)
+    db.commit()
+    visualization_id = visualization.id
+    db.close()
+
+    try:
+        resp = client.get(f"/api/sessions/{session_id}/visualization/{visualization_id}/image")
+        assert resp.status_code == 200
+        assert resp.data == real_image_bytes
+    finally:
+        os.remove(os.path.abspath(relative_image_path))
+        os.rmdir(abs_dir)

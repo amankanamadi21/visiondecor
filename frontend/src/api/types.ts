@@ -64,7 +64,11 @@ export interface CatalogItem {
   depth_cm: number;
   height_cm: number;
   image_url: string;
-  data_source: string; // always "MOCK" — see brief PART 6 / PLAN.md
+  data_source: string; // "REAL" as of 2026-09-09 (was "MOCK") — see PLAN.md
+  // Real, manually-researched retailer link + the date its price/link was
+  // last checked — null only for a genuinely MOCK row (none currently seeded).
+  product_url: string | null;
+  price_verified_at: string | null;
 }
 
 export interface RecommendationItem {
@@ -141,6 +145,10 @@ export interface StyleResult {
   room_width_cm: number | null;
   room_length_cm: number | null;
   detected_objects: DetectedObjects;
+  // Sample rooms: a frontend-relative /samples/<name>.jpg (public, same
+  // origin as the frontend). Real photos: a backend-relative
+  // /api/sessions/.../original-photo (needs API_BASE). null if unavailable.
+  original_photo_url: string | null;
 }
 
 export interface LayoutObject {

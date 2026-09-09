@@ -101,6 +101,22 @@ a { color: var(--vd-accent-dark); }
   margin-bottom: 0.6rem;
 }
 .session-list a { text-decoration: none; color: var(--vd-ink); }
+.session-list__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+.session-list__delete {
+  background: none;
+  border: 1px solid var(--vd-border);
+  color: var(--vd-error-ink, #b3261e);
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.82rem;
+  flex-shrink: 0;
+}
+.session-list__delete:hover:not(:disabled) { background: #fdecea; }
 
 .wizard-step {
   background: var(--vd-surface);
@@ -220,6 +236,21 @@ a { color: var(--vd-accent-dark); }
 .recommendation-card__scores { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.6rem; }
 .recommendation-card__rationale { font-size: 0.85rem; color: var(--vd-muted); margin: 0; line-height: 1.45; }
 
+/* --- 2026-09-09: real catalog (product_url + price_verified_at) --- */
+.recommendation-card__real-link {
+  font-size: 0.78rem;
+  color: #1f4b6e;
+  text-decoration: none;
+  border-bottom: 1px solid #b8d3ea;
+}
+.recommendation-card__real-link:hover { border-bottom-color: #1f4b6e; }
+.recommendation-card__verified {
+  font-size: 0.78rem;
+  color: var(--vd-muted);
+  margin: -0.3rem 0 0.6rem;
+  line-height: 1.4;
+}
+
 .score-bar { display: grid; grid-template-columns: 130px 1fr; align-items: center; gap: 0.6rem; font-size: 0.78rem; }
 .score-bar__track { background: var(--vd-border); border-radius: 999px; height: 7px; overflow: hidden; }
 .score-bar__fill { height: 100%; background: var(--vd-accent); }
@@ -241,6 +272,22 @@ a { color: var(--vd-accent-dark); }
 
 .visualization-view { max-width: 560px; margin-bottom: 1.5rem; }
 .visualization-view img { width: 100%; border-radius: 10px; border: 1px solid var(--vd-border); display: block; }
+
+/* --- 2026-09-09: uploaded photo vs. generated visualization, side by side --- */
+.before-after {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  max-width: 1100px;
+  margin-bottom: 1rem;
+}
+.before-after__panel h3 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+.before-after__panel img {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--vd-border);
+  display: block;
+}
 
 .within-budget { color: #2c6e49; }
 .over-budget { color: var(--vd-error-ink); }
@@ -373,7 +420,7 @@ a { color: var(--vd-accent-dark); }
      not chrome — never hidden here. Only interactive/navigational elements
      that mean nothing on a printed page are stripped. */
   .design-detail-page__no-print { display: none !important; }
-  .recommendation-card, .visualization-view, .floorplan-view {
+  .recommendation-card, .visualization-view, .floorplan-view, .before-after__panel {
     break-inside: avoid;
   }
 }

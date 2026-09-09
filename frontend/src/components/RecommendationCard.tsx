@@ -10,6 +10,7 @@ const SCORE_ITEMS: { key: ScoreKey; label: string }[] = [
 
 export function RecommendationCard({ item }: { item: RecommendationItem }) {
   const c = item.catalog_item;
+  const isMock = c.data_source === "MOCK";
   return (
     <div className="recommendation-card">
       <img src={c.image_url} alt={c.name} />
@@ -20,10 +21,29 @@ export function RecommendationCard({ item }: { item: RecommendationItem }) {
         </div>
         <div className="recommendation-card__price">
           {c.currency} {c.price.toLocaleString()}
-          <span className="mock-badge" title="This is placeholder demo data, not a real product or price.">
-            MOCK DATA
-          </span>
+          {isMock ? (
+            <span className="mock-badge" title="This is placeholder demo data, not a real product or price.">
+              MOCK DATA
+            </span>
+          ) : (
+            c.product_url && (
+              <a
+                className="recommendation-card__real-link"
+                href={c.product_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                View real product ↗
+              </a>
+            )
+          )}
         </div>
+        {!isMock && c.price_verified_at && (
+          <p className="recommendation-card__verified">
+            Real product — price and link verified {c.price_verified_at}. The photo shown is a stand-in,
+            not the retailer's own product image.
+          </p>
+        )}
         <div className="recommendation-card__scores">
           {SCORE_ITEMS.map(({ key, label }) => (
             <div key={key} className="score-bar">

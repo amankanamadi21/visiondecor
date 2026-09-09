@@ -11,6 +11,8 @@ job fails with a specific, honest error (PipelineStageError
 """
 from __future__ import annotations
 
+import os
+
 from flask import Blueprint, current_app, g, jsonify, request, send_file
 
 from sqlalchemy import select
@@ -131,8 +133,43 @@ def get_latest_style(session_id: int):
             "room_width_cm": analysis.room_width_cm,
             "room_length_cm": analysis.room_length_cm,
             "detected_objects": _detected_objects_dict(analysis, is_sample_room),
+            "original_photo_url": _original_photo_url(analysis, session_id, is_sample_room),
         }
     )
+
+
+def _original_photo_url(analysis: RoomAnalysis, session_id: int, is_sample_room: bool) -> str | None:
+    """2026-09-09: lets the UI show the uploaded photo alongside the
+    generated visualization. A sample room's "original" is the shipped
+    static demo image (already public at /samples/<name>.jpg, matching
+    NewDesignPage's SAMPLE_ROOMS list) — never a real upload — while a real
+    photo is served through the authenticated original-photo endpoint."""
+    if is_sample_room:
+        fixture_name = analysis.model_versions.get("fixture_name") if analysis.model_versions else None
+        return f"/samples/{fixture_name}.jpg" if fixture_name else None
+    return f"/api/sessions/{session_id}/original-photo"
+
+
+@bp.get("/<int:session_id>/original-photo")
+@login_required
+def get_original_photo(session_id: int):
+    db = get_session()
+    get_owned_session(db, session_id, g.user.id)
+
+    # Looked up directly from RoomImage, not via _get_latest_analysis — the
+    # photo itself exists immediately on upload, before the style/CV
+    # analysis job has necessarily finished (or even started).
+    room_image = (
+        db.query(RoomImage)
+        .filter_by(session_id=session_id)
+        .order_by(RoomImage.created_at.desc())
+        .first()
+    )
+    if room_image is None or room_image.original_path.startswith("FIXTURE:"):
+        raise not_found("No uploaded photo is available for this design.")
+    # os.path.abspath: same fix as get_visualization_image (2026-09-09) —
+    # send_file resolves a relative path against app.root_path, not cwd.
+    return send_file(os.path.abspath(room_image.original_path), mimetype="image/jpeg")
 
 
 # Sanity bounds — the same kind used for room dimensions (D004): catch a
@@ -256,6 +293,8 @@ def _recommendation_item_dict(item: RecommendationItem) -> dict:
             "height_cm": c.height_cm,
             "image_url": c.image_url,
             "data_source": c.data_source,
+            "product_url": c.product_url,
+            "price_verified_at": c.price_verified_at.isoformat() if c.price_verified_at else None,
         },
     }
 
@@ -406,7 +445,16 @@ def get_visualization_image(session_id: int, visualization_id: int):
     )
     if visualization is None:
         raise not_found("Visualization not found.")
-    return send_file(visualization.image_path, mimetype="image/jpeg")
+    # image_path is stored relative to the process's cwd at generation time
+    # (see pipeline_stages.py's GENERATED_DIR handling) — but Flask's
+    # send_file resolves a relative path against app.root_path (backend/),
+    # not cwd (the repo root, per this project's documented run command),
+    # which silently 404s whenever they differ. os.path.abspath resolves
+    # against os.getcwd() instead, matching how the path was originally
+    # constructed. Found live: every prior manual verification this session
+    # happened to run Flask from backend/, which made root_path == cwd and
+    # masked this exact mismatch.
+    return send_file(os.path.abspath(visualization.image_path), mimetype="image/jpeg")
 
 
 def _render_floorplan_for_session(db, session_id: int, layout: Layout) -> str | None:

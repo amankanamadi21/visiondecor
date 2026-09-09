@@ -85,7 +85,12 @@ def upload_room_image(session_id: int):
 
     user_dir = os.path.join(config.UPLOAD_DIR, str(g.user.id), str(session_id))
     os.makedirs(user_dir, exist_ok=True)
-    original_path = os.path.join(user_dir, f"{validated.sha256_hex}.jpg")
+    # Stored as an absolute path — Flask's send_file (used when serving this
+    # back, e.g. get_original_photo) resolves a relative path against
+    # app.root_path (backend/), not this process's cwd (the repo root, per
+    # this project's documented run command) — the exact bug found and fixed
+    # 2026-09-09 for visualization images, applied here from the start.
+    original_path = os.path.abspath(os.path.join(user_dir, f"{validated.sha256_hex}.jpg"))
     with open(original_path, "wb") as f:
         f.write(validated.clean_bytes)
 
@@ -121,7 +126,7 @@ def upload_room_image(session_id: int):
     if fixture_name is not None and not room_image.analyses:
         persist_fixture(db, session_id, get_fixture(fixture_name))
 
-    processed_path = os.path.join(user_dir, f"{validated.sha256_hex}_processed.jpg")
+    processed_path = os.path.abspath(os.path.join(user_dir, f"{validated.sha256_hex}_processed.jpg"))
 
     job_runner = current_app.config["VD_JOB_RUNNER"]
 

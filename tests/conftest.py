@@ -45,13 +45,16 @@ def _seed_reference_data(engine):
     from backend.models import DesignPrinciple, FurnitureCatalogItem
     from scripts.seed_catalog import CATALOG_SEED
 
+    from datetime import date as _date
+
     with Session(engine) as db:
-        for (name, category, styles, color, price, currency, w, d, h, image_url) in CATALOG_SEED:
+        for (name, category, styles, color, price, currency, w, d, h, image_url, product_url) in CATALOG_SEED:
             db.add(
                 FurnitureCatalogItem(
                     name=name, category=category, style_tags=styles, color=color,
                     price=price, currency=currency, width_cm=w, depth_cm=d, height_cm=h,
-                    image_url=image_url,
+                    image_url=image_url, product_url=product_url,
+                    price_verified_at=_date(2026, 9, 9),
                 )
             )
 

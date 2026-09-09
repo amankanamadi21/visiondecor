@@ -354,7 +354,11 @@ def _attempt_visualization(db, layout, analysis, loaded, rec_result, design_sess
 
     image_dir = os.path.join(generated_dir, str(design_session.user_id), str(design_session.id))
     os.makedirs(image_dir, exist_ok=True)
-    image_path = os.path.join(image_dir, f"layout_{layout.id}.jpg")
+    # Stored as an absolute path — Flask's send_file (backend/api/design.py's
+    # get_visualization_image) resolves a relative path against app.root_path
+    # (backend/), not this process's cwd (the repo root, per this project's
+    # documented run command), which silently 404s whenever they differ.
+    image_path = os.path.abspath(os.path.join(image_dir, f"layout_{layout.id}.jpg"))
     with open(image_path, "wb") as f:
         f.write(result.image_bytes)
 

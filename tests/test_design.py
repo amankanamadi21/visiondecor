@@ -94,7 +94,12 @@ def test_full_generate_flow_produces_recommendation_and_layout(client, app, csrf
     assert rec["iteration"] == 1
     assert len(rec["items"]) > 0
     for item in rec["items"]:
-        assert item["catalog_item"]["data_source"] == "MOCK"  # never hidden, per brief PART 6/34.15
+        # 2026-09-09: catalog is real product data now (was MOCK) — the
+        # invariant is still "never hidden", just pointed the other way:
+        # every real row must disclose a real product_url + verified date.
+        assert item["catalog_item"]["data_source"] == "REAL"
+        assert item["catalog_item"]["product_url"]
+        assert item["catalog_item"]["price_verified_at"]
 
     layout_resp = client.get(f"/api/sessions/{session_id}/layout")
     assert layout_resp.status_code == 200

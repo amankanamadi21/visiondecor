@@ -17,5 +17,53 @@ services:
       timeout: 5s
       retries: 10
 
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: visiondecor_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides the .env value (meant for running the backend directly on
+      # the host, where Postgres is reachable at localhost:5432) — inside
+      # the compose network, Postgres is only reachable via the `db`
+      # service name.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-visiondecor}:${POSTGRES_PASSWORD:-visiondecor_dev_password}@db:5432/${POSTGRES_DB:-visiondecor}
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+      # Named volumes so pretrained model weights (YOLO/SegFormer/CLIP/
+      # sentence-transformers) downloaded on first real use persist across
+      # container restarts instead of re-downloading every time.
+      - visiondecor_hf_cache:/root/.cache/huggingface
+      - visiondecor_torch_cache:/root/.cache/torch
+      - visiondecor_ultralytics_config:/root/.config/Ultralytics
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: visiondecor_frontend
+    restart: unless-stopped
+    env_file: frontend/.env
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume so the container's own npm-installed node_modules
+      # (built for the container's platform) isn't shadowed by whatever
+      # (or nothing) exists in the host's frontend/node_modules.
+      - /app/node_modules
+    depends_on:
+      - backend
+
 volumes:
   visiondecor_pgdata:
+  visiondecor_hf_cache:
+  visiondecor_torch_cache:
+  visiondecor_ultralytics_config:

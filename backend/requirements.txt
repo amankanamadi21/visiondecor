@@ -16,7 +16,12 @@ PyJWT==2.9.0
 argon2-cffi==23.1.0
 
 # --- Validation / config ---
-pydantic==2.9.2
+# 2.9.2 was the original pin, but google-genai==2.22.0 (added in Batch 3)
+# requires pydantic>=2.12.5 — pip silently resolved the real dev venv to a
+# newer pydantic without this file ever being updated to match, which a
+# fresh install (e.g. this project's Docker image) surfaced as a hard
+# conflict. Repinned to what's actually installed and working.
+pydantic==2.13.5
 python-dotenv==1.0.1
 python-magic==0.4.27
 

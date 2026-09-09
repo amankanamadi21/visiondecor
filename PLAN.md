@@ -1457,6 +1457,232 @@ confirms the many individual fixes made across this session (the style-job race,
 visualization image, the raw-JSON feedback message) actually compose correctly end-to-end, not just
 in isolation.
 
+## Docker for backend + frontend — built, partially verified — 2026-09-08
+
+Previously only `db` (Postgres+pgvector) was containerized. Added `backend/Dockerfile`,
+`frontend/Dockerfile`, `.dockerignore` files, and two new `docker-compose.yml` services so
+`docker compose up` can run the whole app, not just the database — the user's own request, made
+explicit as a real decision (image size / build time trade-off for a CPU-only, ML-heavy backend)
+rather than added silently.
+
+**What's actually verified:**
+- `docker compose config` — the compose file parses correctly and, critically, `DATABASE_URL` is
+  correctly overridden to point at the `db` service name (`db:5432`) inside the compose network,
+  distinct from the `.env` value meant for running the backend directly on the host
+  (`localhost:5432`) — the one thing that's easy to get silently wrong in a multi-service compose
+  file and would have caused a confusing runtime failure, not a build failure.
+- The frontend image **builds and runs successfully** — started standalone (bypassing the
+  `depends_on: backend` chain, which wasn't buildable yet), confirmed serving real content on
+  `:5173` with a live `curl` (`200`).
+- A real bug found and fixed along the way: `backend/requirements.txt` pinned `pydantic==2.9.2`,
+  but `google-genai==2.22.0` (added in Batch 3) actually requires `pydantic>=2.12.5`. The local dev
+  venv had silently drifted to a working `pydantic==2.13.5` at some point without this file ever
+  being updated to match — invisible for months of local development because pip never re-resolves
+  an already-populated venv from scratch, but a hard `ResolutionImpossible` failure the moment a
+  **fresh** install (exactly what Docker does) tried to resolve the same file. Re-pinned to
+  `2.13.5`. This is exactly the kind of drift a fresh, from-scratch install exists to catch.
+
+**What's NOT verified:** the backend image's `pip install` step (torch + transformers +
+ultralytics + sentence-transformers is a large, heavy dependency set) stalled mid-download twice
+across two separate attempts — once on `torch` (454MB), once on `opencv-python-headless` (39.6MB)
+on the retry — each time after downloading normally for a while at a normal ~2MB/s, then going
+silent with no error. The same packages install reliably in the local venv outside a container, so
+this reads as a Docker Desktop VM networking issue specific to this machine, not a problem with the
+Dockerfile, `requirements.txt`, or this project's code — but it means `docker compose up` for the
+full stack has **not** been proven to work end-to-end, unlike everything else in this log. Flagged
+honestly rather than claimed working on the strength of "the file looks right." The user chose to
+keep the Dockerfiles as-is and revisit verification later (a Docker Desktop restart often clears
+this specific class of VM networking hiccup) rather than keep retrying now or drop the feature.
+
+## Real bug found by the user's own first real usage: broken visualization image — 2026-09-09
+
+The user, running the app themselves for the first time (following the README exactly, from the
+repo root), reported a broken image icon where the generated visualization should be. Traced live:
+
+`GET .../visualization/<id>/image` called `send_file(visualization.image_path, ...)` with a
+*relative* path (`./generated/<user>/<session>/layout_<id>.jpg`). Flask's `send_file` resolves a
+relative path against **`app.root_path`** (`backend/`, the directory containing the Flask package)
+— **not** the process's actual working directory. The file is written at generation time relative
+to `os.getcwd()` (the repo root, since `GENERATED_DIR=./generated` in `.env` and the documented run
+command starts Flask from there). Whenever those two differ, `send_file` looks in the wrong place
+and 404s silently (the frontend just shows a broken image icon, no error surfaced anywhere).
+
+**Why this survived the entire project until now, despite extensive manual testing**: every single
+live browser verification done earlier this session (Cloudflare, Hugging Face, the CV batches, the
+demo-readiness pass — all of it) started Flask with `cd backend && flask run`, not from the repo
+root as the README actually documents. That mistake made `app.root_path` and `cwd` coincidentally
+equal every time, perfectly masking the bug. The user correctly followed the documented instructions
+and ran it from the repo root — which is what exposed a real, previously-invisible defect. A sober
+reminder that "I tested this thoroughly" is only as good as whether the test actually matched how a
+real user runs the app; it didn't, and no amount of repetition would have caught it while the same
+mistake kept getting repeated.
+
+**Fixed on both sides:** `get_visualization_image` now resolves via `os.path.abspath(...)`
+(matching `os.getcwd()`, not `app.root_path`) — fixes existing rows immediately, no regeneration
+needed. `pipeline_stages.py` now also stores an absolute path at write time, as defense in depth.
+
+**A new regression test** (`test_visualization_image_endpoint_serves_a_relative_path_correctly`)
+was added specifically because no test had ever exercised this endpoint at all — confirmed it
+actually catches the regression by temporarily reverting the fix and watching the test reproduce
+the user's exact `FileNotFoundError`, then restored the fix and confirmed it passes. 129/129 tests
+passing.
+
+## User-requested: before/after photo, delete a design, real product links — 2026-09-09
+
+Three asks in one message. Two were well-scoped and built directly; the third (product links)
+surfaced a real fork — the whole catalog is `data_source='MOCK'`, so "link to the product" first
+needed deciding what a link should even mean.
+
+**1. Uploaded photo shown alongside the generated visualization.** New `GET
+/sessions/<id>/original-photo` (ownership-checked) plus `original_photo_url` in the `/style`
+response — `/samples/<name>.jpg` for a sample room (the already-public static asset, never a fake
+authenticated-endpoint URL), the new authenticated endpoint for a real upload. Applied the
+send_file/`os.path.abspath` fix **proactively** this time (`uploads.py`'s `original_path`/
+`processed_path` had the exact same latent relative-path bug as yesterday's visualization-image
+bug, just never yet triggered) — both write and read sides fixed from the start, not found the
+hard way twice. `DesignDetailPage` gained a `.before-after` side-by-side panel; correctly shows only
+the uploaded-photo panel (no visualization panel) for a sample room, since fixture rooms have never
+had real photo bytes to render from — confirmed this is the existing, intentional behavior, not a
+new bug, before treating it as one.
+
+**2. Delete a design.** `DELETE /api/sessions/<id>` — the DB side is one cascading delete (every
+child table's FK is already `ondelete=CASCADE` from `design_sessions`, verified table-by-table
+before relying on it), but that cascade never touches the filesystem, so uploaded/processed photos
+and generated visualization images are collected and removed explicitly first, or they'd become
+permanently orphaned disk space with no DB row pointing at them. Dashboard gained a per-design
+Delete button with a native confirm dialog (irreversible action).
+
+**3. "Links to recommended products" — real products, not just search links.** The user's answer
+went further than offered: replace the mock catalog with real, purchasable products entirely, not
+just add a search-engine link on top of fake data. Locked before any code: manually researched (not
+scraped — real retailer ToS generally prohibit scraping, and API access needs an approved
+affiliate/seller account this project doesn't have) from real Indian retailers, all ~30 items
+replaced (not a pilot), each stamped with a "verified as of" date so a stale price reads as stale,
+not as a live one — the same honesty discipline as every `MOCK`/`estimated`/`user-provided` label
+already in this project, now applied in the opposite direction (the risk shifts from
+under-claiming reality to over-claiming it, once these prices age).
+
+Research delegated to 4 parallel agents (one per category group), each required to actually fetch a
+real product page per item (WebSearch + WebFetch, `r.jina.ai` as a read-through proxy where a
+retailer's bot protection blocked direct fetches — still the live page's real content) rather than
+recall a plausible-sounding product from training data. Agents were explicitly told to report
+"NOT FOUND" rather than invent a match; both groups that reported back so far did exactly that
+where a real match couldn't be confirmed in stock (e.g. no genuinely industrial/reclaimed coffee
+table was found in stock at the target size — the closest verified real alternative was used
+instead, flagged, not silently substituted as if it were an exact match). Schema/seed-script/model
+changes for this are still in progress — see the next log entry once the remaining two research
+groups return and the new catalog is built.
+
+**Tests:** 8 new (`tests/test_original_photo_and_delete.py`) covering both new endpoints —
+auth-required, ownership boundaries, the sample-room-vs-real-photo URL distinction, and confirming
+the delete endpoint actually removes the file from disk, not just the DB row. 137/137 tests passing.
+Live-verified through a real (separate-port, isolated from the user's own running dev servers)
+browser session: a real photo's before/after panel, a sample room's single-panel case, and the
+dashboard delete button all confirmed visually.
+
+## Real product catalog replacement completed — 2026-09-09
+
+The remaining piece of item 3 above: all 30 mock catalog rows replaced with real, purchasable
+products. Schema: `FurnitureCatalogItem` gained `product_url` (String(500), nullable) and
+`price_verified_at` (Date, nullable) — migration `5219def286a1_add_product_url_and_price_verified_at_`,
+applied. `data_source` default flipped from `"MOCK"` to `"REAL"` (still a plain string column, both
+values remain valid — a mock row could still be added later without a schema change, e.g. for a
+demo catalog seed, though none currently exist).
+
+**Research:** 4 parallel background research agents, one per category group (sofas/chairs/beds,
+tables/cabinets/shelves, lighting/rugs/curtains, decor + the remainder), each required to fetch a
+real, live product page (WebSearch + WebFetch, `r.jina.ai` as a read-through proxy where a
+retailer's bot protection blocked a direct fetch) per item and report "NOT FOUND" rather than
+invent a plausible-sounding match. Sources: IKEA India, Urban Ladder, Pepperfry, Home Centre,
+Wakefit, Obeetee, Homesake, Amazon.in. Every row carries a real current price, real retailer
+dimensions, and a real product URL, stamped `price_verified_at = 2026-09-09` — so a price that goes
+stale reads as stale (checkable against the date), never silently as live. This is the same
+honesty discipline as every other `MOCK`/`estimated`/`user-provided` label in this project, applied
+in the opposite direction: the risk here is a real link/price aging, not a fake one being mistaken
+for real.
+
+**Disclosed deviations (11 of 30 items are the closest in-stock real match rather than an exact
+match to the original mock description, or have one retailer-unstated dimension estimated) — all
+flagged inline in `scripts/seed_catalog.py`, never silently substituted:**
+- Beds: engineered wood/particleboard finish, not solid natural timber.
+- KLINGSBO coffee table: matte-black steel frame, not chrome.
+- Quinn coffee table: solid mango wood, "contemporary" per the retailer — closest in-stock match
+  for an industrial/reclaimed look; no true industrial/reclaimed table was in stock at verification.
+- Wakefit study desk: two shelves + a pull-out keyboard tray, not a literal drawer.
+- Canvera sideboard: rattan-mesh door fronts (wood + woven rattan), not pure natural rattan.
+- LACK shelf: a single shelf, not a multi-piece set.
+- Westin book shelf: metal only, grey — no black pipe-and-wood industrial bookshelf confirmed in stock.
+- Homesake floor lamp: straight candlestick-style, not arc-shaped — real gold arc lamps weren't found in stock.
+- GULLSUDARE lamp shade height, Empress rug pile height, both curtains' depth: retailer didn't
+  state these dimensions — estimated (shade height ≈ its stated diameter; rug/curtain thickness ≈
+  1cm, a standard thin-material convention already used elsewhere in this catalog).
+- Dracaena plant pot: listed as plastic, not confirmed ceramic.
+
+**Deliberate, disclosed trade-off kept as-is:** `image_url` remains a placeholder (picsum.photos),
+not a hotlinked retailer photo — hotlinking a third party's product image raises ToS/copyright
+questions out of scope for this project, and the image was never the load-bearing fact (the real
+name/price/link is). The UI's "View real product ↗" link is what actually points at the genuine item.
+
+**DB blocker and resolution:** `python scripts/seed_catalog.py --reset` initially failed with
+`psycopg2.errors.ForeignKeyViolation` — existing `recommendation_items` rows (months of testing
+plus the user's own real sessions) referenced old catalog rows via `ondelete="RESTRICT"`. Not
+silently worked around: presented to the user as an explicit choice, who chose "clear existing
+design sessions, then reseed." Executed (28 `design_sessions` rows, full cascade confirmed), then
+reseed succeeded. Also manually cleaned up the now-orphaned files under `uploads/*/` and
+`generated/*/` that the raw SQL delete bypassed (the new `DELETE /api/sessions/<id>` endpoint's own
+file-cleanup code path only runs for deletes made through the API).
+
+**Also fixed proactively, same bug class as the earlier `send_file` bug:** `os.path.abspath()`
+applied at write time in `backend/api/uploads.py` (`original_path`/`processed_path`) and
+`backend/services/pipeline_stages.py` (visualization `image_path`) — defense-in-depth alongside the
+existing read-side fix, so a future `flask run` from an unexpected working directory can't
+reintroduce the same relative-path bug on the write side.
+
+**Tests:** `tests/conftest.py`'s `_seed_reference_data()` and `tests/test_design.py` updated for the
+new 11-field `CATALOG_SEED` tuple shape and the `data_source == "REAL"` / `product_url` /
+`price_verified_at` assertions. Full suite: **137/137 passing.**
+
+**Re-measured evaluation numbers (2026-09-09, same 120 synthetic preference combinations / 8
+trials-per-fixture SA study as 2026-09-07/08, now against the real catalog's genuinely different
+prices and dimensions):**
+
+```
+$ python -m evaluation.run_recommendation_study
+  Overall budget compliance rate: 90.8%          (was 87.5%)
+  Mean style-match score: 0.8810                 (was 0.8857)
+  Space-fit rate (score == 1.0): 92.9%           (was 88.1%)
+  Mean space-fit score: 0.9747                   (was 0.9749)
+  Budget compliance by style: Modern 85%, Minimalist 100%, Contemporary 85%,
+    Traditional 85%, Industrial 90%, Scandinavian 100%
+
+$ python -m evaluation.run_layout_study
+  simulated_annealing   feasibility=32/32 (100%)  mean_score=0.7163   (unchanged, byte-for-byte)
+  random                feasibility=32/32 (100%)  mean_score=0.6334   (unchanged, byte-for-byte)
+  greedy_first_fit      feasibility=32/32 (100%)  mean_score=0.6600   (unchanged, byte-for-byte)
+```
+
+Recommendation numbers moved (real prices/dimensions differ from the old mock ones — budget
+compliance and space-fit rate both improved a few points, style-match essentially flat). Layout
+numbers are **exactly unchanged**: the layout study places the fixtures' own `existing_furniture`
+objects plus recommended items, and the SA/random/greedy comparison itself doesn't depend on which
+specific catalog rows were recommended — a genuine no-regression confirmation, not a coincidence to
+be suspicious of.
+
+**Live-verified end-to-end via the real HTTP API** (isolated Flask instance on port 5001, same
+database, disposed of after): registered a real user, created a real session, attached a fixture
+room analysis, set real preferences, ran a real `/generate` job to completion, then fetched
+`/recommendation` and confirmed the live JSON response — not a unit test — carries genuine
+`data_source: "REAL"`, real `product_url`s resolving to live IKEA/Pepperfry pages, and
+`price_verified_at: "2026-09-09"` for every recommended item. Also exercised `DELETE
+/api/sessions/<id>` live in the same pass (204, confirmed). Test/verification user and session were
+deleted afterward, no clutter left in the real database.
+**Not done:** a literal browser screenshot of `RecommendationCard` (no browser-automation tool was
+available in this environment for this pass) — the rendering path (`_recommendation_item_dict` →
+`types.ts` → `RecommendationCard.tsx`) was verified by code review plus the real API payload above,
+not by looking at rendered pixels. The component logic itself was already visually confirmed
+working for the MOCK-badge path in the 2026-09-08 live browser session referenced above; only the
+data values changed, not the rendering code path.
+
 ---
 
 ## Verification approach (applies from Phase 3 onward)

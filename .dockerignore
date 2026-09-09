@@ -1,0 +1,14 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+node_modules
+frontend/node_modules
+frontend/dist
+datasets
+uploads
+generated
+backend/uploads
+backend/generated
+.git
+*.pt
