@@ -66,19 +66,35 @@ def build_default_providers(
     cloudflare_account_id: str | None = None,
     cloudflare_api_token: str | None = None,
     huggingface_api_token: str | None = None,
+    openai_api_key: str | None = None,
 ) -> list[RenderProvider]:
-    """Gemini first (genuine image editing, structure-preserving — see
-    GeminiImageProvider), then Cloudflare, then Hugging Face (both
-    text-to-image only, verified NOT structure-preserving — see each
-    provider's own docstring for exactly what was tested and why). The
-    chain degrades to 'no photorealistic render, floor plan only'
-    gracefully when nothing is configured or every configured provider
-    fails."""
+    """Free structure-preserving options first — Gemini (genuine image
+    editing, but its free tier currently grants 0 quota, so in practice it
+    always fails over), then the free Hugging Face Kontext provider (also
+    genuine image-to-image editing, live-verified 2026-09-18 — see
+    HuggingFaceKontextProvider's docstring). Next, OpenAI's gpt-image-1-mini
+    (also genuine editing, structure-preserving, live-verified 2026-09-18 —
+    see OpenAIImageEditProvider's docstring) — paid but cheap, added because
+    the user had a key and both free options above were exhausted. Only
+    after all three structure-preserving options fail do we drop to the two
+    text-to-image-only providers (Cloudflare, then the plain Hugging Face
+    FLUX provider) which invent an unrelated room — verified NOT
+    structure-preserving, see each provider's own docstring. The chain
+    degrades to 'no photorealistic render, floor plan only' gracefully when
+    nothing is configured or every configured provider fails."""
     providers: list[RenderProvider] = []
     if gemini_api_key:
         from ai.visualization.providers.gemini import GeminiImageProvider
 
         providers.append(GeminiImageProvider(gemini_api_key))
+    if huggingface_api_token:
+        from ai.visualization.providers.huggingface_kontext import HuggingFaceKontextProvider
+
+        providers.append(HuggingFaceKontextProvider(huggingface_api_token))
+    if openai_api_key:
+        from ai.visualization.providers.openai_edit import OpenAIImageEditProvider
+
+        providers.append(OpenAIImageEditProvider(openai_api_key))
     if cloudflare_account_id and cloudflare_api_token:
         from ai.visualization.providers.cloudflare import CloudflareImageProvider
 

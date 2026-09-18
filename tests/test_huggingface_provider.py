@@ -90,8 +90,20 @@ def test_structure_preserving_is_false():
 def test_real_live_call_produces_a_valid_image():
     """Not mocked — an actual network call to Hugging Face's router API.
     Skipped automatically wherever credentials aren't configured (e.g. CI),
-    but proves the real integration works when they are."""
+    but proves the real integration works when they are.
+
+    2026-09-18: this shares the same account-wide free monthly credit pool
+    as the sibling HuggingFaceKontextProvider — enough real test runs across
+    a session can exhaust it (HTTP 402, "You have depleted your monthly
+    included credits"). That's a real, disclosed account-level resource
+    limit, not a code defect — skipped here (with the response surfaced),
+    same treatment as test_huggingface_kontext_provider.py's live test."""
     provider = HuggingFaceImageProvider(os.environ["HUGGINGFACE_API_TOKEN"].strip())
-    image_bytes = provider.render(b"unused", "a photorealistic modern living room, wide shot")
+    try:
+        image_bytes = provider.render(b"unused", "a photorealistic modern living room, wide shot")
+    except RenderUnavailableError as exc:
+        if "depleted" in str(exc).lower() or "402" in str(exc):
+            pytest.skip(f"Hugging Face free credit allotment exhausted: {exc}")
+        raise
     assert len(image_bytes) > 1000
     assert image_bytes[:8] == b"\x89PNG\r\n\x1a\n"  # real PNG magic bytes

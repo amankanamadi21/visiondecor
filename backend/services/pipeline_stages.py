@@ -212,12 +212,16 @@ def run_generate_design(job_id: int, report_progress: Callable[[int], None], *, 
             .order_by(Feedback.created_at.desc())
             .first()
         )
-        excluded_ids, forced_keep_ids, drop_categories = [], [], 0
+        excluded_ids, forced_keep_ids, drop_categories, wall_color = [], [], 0, None
         if latest_feedback is not None and latest_feedback.structured_deltas:
             deltas = latest_feedback.structured_deltas
             excluded_ids = deltas.get("remove_item_ids") or []
             forced_keep_ids = deltas.get("keep_item_ids") or []
             drop_categories = 1 if deltas.get("crowding_shift") == "less" else 0
+            # Only ever reaches the visualization prompt (below) — there is
+            # no "wall" catalog item, so this has no effect on recommendation
+            # or layout scoring at all.
+            wall_color = deltas.get("wall_color")
 
         rec_result = generate_recommendation(
             db,
@@ -232,6 +236,15 @@ def run_generate_design(job_id: int, report_progress: Callable[[int], None], *, 
             drop_lowest_priority_categories=drop_categories,
         )
         report_progress(45)
+
+        # A "replace" recommendation's whole point is that the old item goes
+        # away — without this, the old existing item would still get placed
+        # (loaded.room.existing_furniture, below) right alongside its own
+        # replacement, showing both in the layout and the render.
+        if rec_result.replaced_existing_labels:
+            loaded.room.existing_furniture = [
+                f for f in loaded.room.existing_furniture if f.label not in rec_result.replaced_existing_labels
+            ]
 
         prior_iterations = db.query(Recommendation).filter_by(session_id=session_id).count()
         recommendation = Recommendation(
@@ -250,7 +263,7 @@ def run_generate_design(job_id: int, report_progress: Callable[[int], None], *, 
                 RecommendationItem(
                     recommendation_id=recommendation.id,
                     catalog_item_id=scored.catalog_item.id,
-                    action=RecommendationAction.KEEP if scored.action == "keep" else RecommendationAction.ADD,
+                    action=RecommendationAction(scored.action),  # "add" | "keep" | "replace"
                     score_breakdown=scored.score_breakdown,
                     rationale=scored.rationale,
                     quantity=1,
@@ -306,13 +319,15 @@ def run_generate_design(job_id: int, report_progress: Callable[[int], None], *, 
         db.commit()
         report_progress(90)
 
-        _attempt_visualization(db, layout, analysis, loaded, rec_result, design_session, layout_result)
+        _attempt_visualization(db, layout, analysis, loaded, rec_result, design_session, layout_result, wall_color)
         report_progress(100)
     finally:
         db.close()
 
 
-def _attempt_visualization(db, layout, analysis, loaded, rec_result, design_session, layout_result) -> None:
+def _attempt_visualization(
+    db, layout, analysis, loaded, rec_result, design_session, layout_result, wall_color: str | None = None
+) -> None:
     """Best-effort — a missing/failed provider is a normal, expected state
     (no GEMINI_API_KEY configured is the documented default), not a job
     failure. The floor plan (always available, computed on demand by the
@@ -334,13 +349,18 @@ def _attempt_visualization(db, layout, analysis, loaded, rec_result, design_sess
         os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip() or None,
         os.environ.get("CLOUDFLARE_API_TOKEN", "").strip() or None,
         os.environ.get("HUGGINGFACE_API_TOKEN", "").strip() or None,
+        os.environ.get("OPENAI_API_KEY", "").strip() or None,
     )
     if not providers:
         return  # no provider configured — expected default state, not an error
 
     all_items = [*loaded.room.existing_furniture, *layout_result.placed_items]
+    replaces_by_catalog_id = {
+        scored.catalog_item.id: scored.replaces_labels for scored in rec_result.items if scored.action == "replace"
+    }
     prompt = build_edit_prompt(
-        loaded.room, all_items, style=design_session.preferred_style, palette=rec_result.palette
+        loaded.room, all_items, style=design_session.preferred_style, palette=rec_result.palette,
+        replaces_by_catalog_id=replaces_by_catalog_id, wall_color=wall_color,
     )
 
     with open(original_path, "rb") as f:

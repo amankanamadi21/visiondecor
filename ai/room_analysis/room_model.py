@@ -53,6 +53,12 @@ class FurnitureItem:
     # functionality-adjacency rules (ai/layout_optimization/scoring.py).
     # None for existing/fixture furniture whose category wasn't classified.
     category: str | None = None
+    # True only for the one path where a user explicitly confirmed this
+    # item's real geometry (db_adapter.load_room_model_from_db) — the
+    # recommendation engine treats these as off-limits for a style-mismatch
+    # "replace" suggestion (ai/recommendation/scoring.py), since the user
+    # deliberately placed them, unlike a fixture's given/known furniture.
+    user_confirmed: bool = False
 
     def __post_init__(self):
         if self.rotation_deg not in VALID_ROTATIONS:

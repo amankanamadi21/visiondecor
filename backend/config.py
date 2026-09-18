@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-load_dotenv()  # reads .env in the working directory if present
+# An explicit path, not load_dotenv()'s implicit cwd-based search — this
+# repo's root is always exactly one directory above this file, regardless
+# of the caller's own cwd. (Investigated as a suspect for a real
+# 2026-09-18 bug where render-provider env vars vanished under pytest —
+# it wasn't the actual cause, see tests/conftest.py's `app` fixture
+# history, but explicit is still strictly more robust than implicit here.)
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 
 def _env_bool(name: str, default: bool) -> bool:

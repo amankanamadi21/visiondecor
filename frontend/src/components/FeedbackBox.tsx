@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "../api/client";
 import { JobProgress } from "./JobProgress";
 import type { Job, RecommendationItem, StructuredDeltas } from "../api/types";
@@ -47,31 +47,48 @@ function describeDeltas(deltas: StructuredDeltas, items: RecommendationItem[], c
     : "No specific change was detected in your feedback — regenerating with your current preferences.";
 }
 
+interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+
 /**
  * FR-7 feedback loop (decision D024). Submitting triggers a new generation
  * iteration automatically — see backend/api/feedback.py — so the user sees
- * a refined design without a separate manual "regenerate" step.
+ * a refined design without a separate manual "regenerate" step. Presented as
+ * a chat thread: each message you send and each "Understood: ..." response
+ * stays visible as history, rather than a single-shot form that resets —
+ * the underlying mechanism (one real refinement job per message, a genuinely
+ * new iteration each time) is unchanged, only the presentation is.
  */
 export function FeedbackBox({ sessionId, onRefined, items, currency }: FeedbackBoxProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: "assistant", text: "What would you like to change about this design?" },
+  ]);
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [jobId, setJobId] = useState<number | null>(null);
-  const [appliedDeltas, setAppliedDeltas] = useState<StructuredDeltas | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Stashed in a ref rather than state, so the "Understood: ..." bubble
+  // appears only once the refined design is actually ready — matching the
+  // real state, not just the request sent.
+  const pendingDeltas = useRef<StructuredDeltas | null>(null);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!text.trim()) return;
+    const message = text.trim();
+    if (!message) return;
     setError(null);
     setSubmitting(true);
+    setMessages((prev) => [...prev, { role: "user", text: message }]);
+    setText("");
     try {
       const res = await api.post<{ feedback: { structured_deltas: StructuredDeltas }; job_id: number }>(
         `/api/sessions/${sessionId}/feedback`,
-        { raw_text: text }
+        { raw_text: message }
       );
-      setAppliedDeltas(res.feedback.structured_deltas);
       setJobId(res.job_id);
-      setText("");
+      pendingDeltas.current = res.feedback.structured_deltas;
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not submit feedback.");
     } finally {
@@ -81,38 +98,53 @@ export function FeedbackBox({ sessionId, onRefined, items, currency }: FeedbackB
 
   function handleDone(_job: Job) {
     setJobId(null);
-    setAppliedDeltas(null);
+    if (pendingDeltas.current) {
+      // Compute the text eagerly, right here, using the current ref value —
+      // setMessages's updater function is a closure React calls lazily, not
+      // at this call site, so reading pendingDeltas.current inside it would
+      // instead see whatever the ref holds by the time React gets around to
+      // invoking it — null, since the very next line resets it. That's the
+      // exact "Cannot read properties of null (reading 'budget_delta')"
+      // crash found live (2026-09-18): the reset was racing the lazy read.
+      const text = `Understood: ${describeDeltas(pendingDeltas.current, items, currency)}`;
+      pendingDeltas.current = null;
+      setMessages((prev) => [...prev, { role: "assistant", text }]);
+    }
     onRefined();
   }
 
   return (
-    <div className="feedback-box">
+    <div className="feedback-box feedback-box--chat">
       <h3>Feedback</h3>
       <p className="wizard-step__hint">
         Try: "keep the bed but remove the lamp", "make it more industrial", "reduce cost",
         "make the room less crowded".
       </p>
       {error && <div className="auth-form__error">{error}</div>}
-      {jobId !== null ? (
-        <JobProgress jobId={jobId} onDone={handleDone} />
-      ) : (
-        <form onSubmit={handleSubmit}>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="What would you change about this design?"
-            rows={3}
-          />
-          <button type="submit" disabled={!text.trim() || submitting}>
-            {submitting ? "Submitting…" : "Refine design"}
-          </button>
-        </form>
-      )}
-      {appliedDeltas && (
-        <div className="feedback-box__applied">
-          Understood: {describeDeltas(appliedDeltas, items, currency)}
-        </div>
-      )}
+      <div className="feedback-chat__thread">
+        {messages.map((m, i) => (
+          <div key={i} className={`feedback-chat__bubble feedback-chat__bubble--${m.role}`}>
+            {m.text}
+          </div>
+        ))}
+        {jobId !== null && (
+          <div className="feedback-chat__bubble feedback-chat__bubble--assistant feedback-chat__bubble--pending">
+            <JobProgress jobId={jobId} onDone={handleDone} />
+          </div>
+        )}
+      </div>
+      <form onSubmit={handleSubmit} className="feedback-chat__composer">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="What would you change about this design?"
+          rows={2}
+          disabled={jobId !== null}
+        />
+        <button type="submit" disabled={!text.trim() || submitting || jobId !== null}>
+          {submitting ? "Sending…" : "Send"}
+        </button>
+      </form>
     </div>
   );
 }

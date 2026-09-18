@@ -133,6 +133,26 @@ def test_second_user_cannot_trigger_or_read_first_users_design(client, app, csrf
     assert client.get(f"/api/sessions/{session_id}/layout").status_code == 404
 
 
+def test_room_condition_summary_bands():
+    from backend.api.design import _room_condition_summary
+
+    assert "couldn't" in _room_condition_summary(None, is_sample_room=False).lower()
+
+    crowded = _room_condition_summary(0.15, is_sample_room=False)
+    assert "crowded" in crowded.lower() and "15%" in crowded and "estimated" in crowded.lower()
+
+    moderate = _room_condition_summary(0.4, is_sample_room=False)
+    assert "40%" in moderate and "estimated" in moderate.lower()
+
+    open_room = _room_condition_summary(0.8, is_sample_room=False)
+    assert "80%" in open_room and "estimated" in open_room.lower()
+
+    # A sample room's free_space_ratio is fixture ground truth, not an
+    # estimate — worded as a plain fact instead.
+    sample = _room_condition_summary(0.8, is_sample_room=True)
+    assert "80%" in sample and "estimated" not in sample.lower()
+
+
 def test_preferences_reject_invalid_style(client, csrf_headers):
     _register_and_login(client)
     session_id = _create_session(client, csrf_headers)

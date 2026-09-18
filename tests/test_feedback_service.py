@@ -64,3 +64,19 @@ def test_item_name_with_parenthetical_qualifier_still_matches():
     # Regression guard: "(Queen)" must not become the match keyword.
     deltas = parse_feedback("please keep the bed", ITEMS, current_budget=50000)
     assert 1 in deltas["keep_item_ids"]
+
+
+def test_wall_color_detected():
+    deltas = parse_feedback("change the wall paint to red", ITEMS, current_budget=50000)
+    assert deltas["wall_color"] == "red"
+
+
+def test_wall_color_none_without_the_word_wall():
+    # "red" alone isn't enough — must be paired with "wall" to be unambiguous.
+    deltas = parse_feedback("I want a red sofa", ITEMS, current_budget=50000)
+    assert deltas["wall_color"] is None
+
+
+def test_wall_color_none_when_no_recognized_color_word():
+    deltas = parse_feedback("make the walls look nicer", ITEMS, current_budget=50000)
+    assert deltas["wall_color"] is None

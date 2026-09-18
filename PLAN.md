@@ -1618,10 +1618,12 @@ flagged inline in `scripts/seed_catalog.py`, never silently substituted:**
   1cm, a standard thin-material convention already used elsewhere in this catalog).
 - Dracaena plant pot: listed as plastic, not confirmed ceramic.
 
-**Deliberate, disclosed trade-off kept as-is:** `image_url` remains a placeholder (picsum.photos),
-not a hotlinked retailer photo — hotlinking a third party's product image raises ToS/copyright
-questions out of scope for this project, and the image was never the load-bearing fact (the real
-name/price/link is). The UI's "View real product ↗" link is what actually points at the genuine item.
+**Original trade-off (2026-09-09), later reversed at the user's request — see the 2026-09-18 entry
+further down:** `image_url` was initially kept as a placeholder (picsum.photos), not a hotlinked
+retailer photo, specifically to avoid the ToS/copyright question of hotlinking a third party's
+product image. The image was never the load-bearing fact (the real name/price/link is) — that
+reasoning stands; the user later decided the hotlinking risk was acceptable for real thumbnails and
+asked for them anyway.
 
 **DB blocker and resolution:** `python scripts/seed_catalog.py --reset` initially failed with
 `psycopg2.errors.ForeignKeyViolation` — existing `recommendation_items` rows (months of testing
@@ -1684,6 +1686,397 @@ working for the MOCK-badge path in the 2026-09-08 live browser session reference
 data values changed, not the rendering code path.
 
 ---
+
+## D003 revisited: free structure-preserving render via Hugging Face Kontext — 2026-09-18
+
+Real-world trigger: the user ran the app via `docker compose up`, uploaded a real living-room photo,
+and got back a visualization from Cloudflare (the disclosed, non-structure-preserving fallback) — a
+plausible but *different* room, not their room restyled. Backend logs confirmed why: Gemini returned
+`RESOURCE_EXHAUSTED` with `limit: 0` for `gemini-3.1-flash-image` — Google's free tier for this model
+grants zero requests without billing enabled, worse than what D003 originally researched. The user
+was explicit: **can't pay, but still wants the real feature** (their actual room, restyled) — not
+the disclosed-but-unwanted fallback. This was not silently worked around: presented as a 3-way choice
+(pay for Gemini / drop to floor-plan-only when Gemini fails / keep current behavior) before any
+research or code, per this project's decision-gating rule.
+
+**Finding, live-verified before proposing it as an option (not assumed from memory):**
+`black-forest-labs/FLUX.1-Kontext-dev` is a genuine image-EDITING (not text-to-image) model, live on
+Hugging Face's router via the `fal-ai`/`replicate`/`wavespeed` providers (`task: "image-to-image"`,
+confirmed via `GET /api/models/<id>?expand=inferenceProviderMapping`). Tested for real:
+
+```
+POST https://router.huggingface.co/fal-ai/fal-ai/flux-kontext/dev
+{"prompt": "...", "image_url": "data:image/jpeg;base64,<...>"}
+-> 200 {"images": [{"url": "https://v3b.fal.media/files/..."}]}   (~4s inference)
+```
+
+First tried against a sample-room fixture image and got a confusing result — turned out the fixture
+JPGs under `frontend/public/samples/` are themselves placeholder text cards ("PLACEHOLDER SAMPLE —
+replace with a real photo before demo/submission"), not real photos, so that wasn't a fair test of
+structure preservation (a separate, pre-existing, already-disclosed fact per D022 — sample rooms use
+labeled demo data — not a new bug, just not useful for testing this). Re-tested against the user's
+own real uploaded photo (`uploads/22/35/...jpg`) and **fetched and visually inspected the actual
+output image**, not just the 200 status: same sofa curve, same wall paneling, same artwork placement,
+same chair shapes and coffee-table positions — only the color/style palette changed, exactly as
+prompted. Genuine structure preservation, confirmed by looking at the pixels, using the same free
+`HUGGINGFACE_API_TOKEN` already in `.env` — no billing, no new credential.
+
+**Built:** `ai/visualization/providers/huggingface_kontext.py` (`HuggingFaceKontextProvider`,
+`structure_preserving = True`). Two-step `render()`: POST the edit request (photo as a base64 data
+URI + prompt), then GET the returned image URL to fetch actual bytes (the router's response is a
+CDN link here, not inline base64 like the sibling text-to-image provider). Wired into
+`build_default_providers()` (`render_service.py`) as the **second** provider, right after Gemini and
+before the two text-to-image fallbacks — chain is now: Gemini (structure-preserving, but currently
+always exhausted) → **Hugging Face Kontext (structure-preserving, free, new)** → Cloudflare
+(text-to-image only) → Hugging Face FLUX (text-to-image only) → cache → floor plan. In practice, with
+Gemini's quota at 0, this new provider is now the one that actually runs for most requests — the
+default experience changes from "usually a different room" to "usually your actual room, restyled."
+
+**Disclosed caveat, discovered to be more severe than first assumed:** this shares Hugging Face's
+free monthly credit allotment with the sibling `HuggingFaceImageProvider`, but NOT equally — a
+handful of manual verification calls plus two test-suite runs during this same session (roughly 4-5
+real image-edit calls total) were enough to exhaust it: the fal-ai-routed image-EDIT call started
+returning `402 {"error": "You have depleted your monthly included credits..."}`, while the identical
+token's plain text-to-image (nscale-routed) call kept returning 200 throughout. Confirmed live, not
+assumed: fal-ai-routed editing draws from a much smaller slice of the shared free allotment than
+plain text-to-image generation (presumably because HF's provider costs differ per route). **Practical
+consequence, stated plainly: until this credit resets (monthly, presumably) or a paid tier is added,
+this provider will raise `RenderUnavailableError` on every real call and the chain will fall through
+to Cloudflare/HF-FLUX exactly as it did before this work — the code is correct and will serve real
+structure-preserving edits once credit is available again, but is not currently usable for free,
+sustained volume.** This is a materially smaller "free" budget than the sibling text-to-image
+provider's, not the same category of free — do not conflate the two when describing this to anyone.
+
+**Tests:** `tests/test_huggingface_kontext_provider.py`, 9 tests — mocked HTTP-layer tests (missing
+token, non-200, missing/malformed response, network failure, failed image-fetch step,
+`structure_preserving is True`) plus one real, unmocked live call. That live test passed against a
+real photo the first time it ran (proving the integration genuinely works), then started skipping
+(not failing) on later runs once the account's fal-ai credit was exhausted — the test explicitly
+recognizes the `402 "depleted"` response and skips with the real reason surfaced, rather than either
+hiding the exhaustion behind a pass or turning the whole suite red over an account-level resource
+limit outside the code's control.
+
+## User-requested: recommendations only when necessary, same-room visualization — 2026-09-18
+
+User's ask, verbatim in spirit: analyze the current room, recommend changes only if necessary, then
+show the same room with the recommended additions — not a different room. This landed right after
+the Hugging Face Kontext work above, which made the underlying complaint concrete: even with a
+genuinely structure-preserving provider, the render still looked like a different room, because the
+*prompt* told it to be one.
+
+**Root cause, found by reading `ai/visualization/prompt_builder.py`:** `build_edit_prompt()` always
+led with "Redecorate this {room_type} in a {style} interior design style" — a full-room restyle
+instruction — regardless of how small the actual recommended change was. Existing items were named as
+"kept," but the leading instruction told the model to redecorate everything anyway.
+
+**Fix — visualization now describes only the actual change:** rewritten to lead with "keep everything
+in the photo exactly as it is... except for the specific additions below," name kept items explicitly,
+and describe each new item as an addition or, new this batch, a replacement. The color palette
+instruction was also scoped down from "throughout" to "the new item(s)."
+
+**Recommendation side — was already partially "only if necessary," now closes a real gap:**
+`needed_categories()` (`ai/recommendation/needs.py`) already skipped any category an existing item's
+label already covers — an already-furnished room only ever got recommendations for genuinely missing
+categories. The gap: a covered category was left alone unconditionally, even if the existing item
+obviously didn't fit the user's preferred style. Presented to the user as an explicit choice before
+touching the scoring engine (a locked D007a/D019 component) — chose **"flag style/color mismatches
+too."**
+
+**Honest constraint baked into the implementation, not glossed over:** existing (detected) furniture
+has no known per-item style or color — the only signal CV produces is one overall room-level detected
+style. So "does this existing item match your preferred style" is answered at the room level
+(`detected_style != preferred_style`), not per-item — stated plainly in the code and rationale text,
+never presented as more precise than it is. Color mismatch is not evaluated at all for existing items,
+for the same reason (no signal exists).
+
+**Built:**
+- `ai/recommendation/needs.py`: `categorize_existing()` (new) exposes which existing labels cover
+  which categories — `needed_categories()` now just filters its output for empty matches, no behavior
+  change, but the mapping is now available to the mismatch logic.
+- `ai/recommendation/scoring.py`: covered categories are now split into `needed` (uncovered,
+  action="add") and `mismatched` (covered but the room's overall style doesn't match preferred_style,
+  action="replace") — both draw from the same allocated budget. `ScoredItem` gained `replaces_labels`;
+  `RecommendationResult` gained `replaced_existing_labels`. Rationale for a replace explicitly states
+  the room-level style mismatch, e.g. "Your current Old Wardrobe doesn't match your preferred
+  Industrial style (the room was detected as Traditional overall)."
+- **User-confirmed items are exempt from replacement** (`ai/room_analysis/room_model.py`'s new
+  `FurnitureItem.user_confirmed` flag, set only in `db_adapter.py`'s one real confirmed-geometry path):
+  confirming an item's geometry is a deliberate act of keeping it, and a coarse room-level style signal
+  shouldn't override that. Fixture/demo existing furniture (no confirmation semantics) remains
+  replace-eligible — this is where the feature is actually visible in the sample-room demo flow.
+- `backend/services/pipeline_stages.py`: drops any `replaced_existing_labels` from
+  `loaded.room.existing_furniture` before layout/visualization (the old item must not also get placed
+  alongside its own replacement), and `RecommendationAction.REPLACE` — defined in the schema since
+  Batch ① but never actually used until now — is wired up.
+- `ai/visualization/prompt_builder.py`: `build_edit_prompt()` gained `replaces_by_catalog_id` so a
+  replaced item is described as "Replace the existing {old} with {new}, in a {style} style" rather than
+  "Add {new} near {something}" — necessary because the OLD item is still visible in the real photo's
+  actual pixels even though it's gone from our data model; the image-editing model needs to be told
+  explicitly to remove it, or it ends up with both.
+
+**Tests:** `test_recommendation.py` — style-mismatch flags a replace with the right `replaces_labels`
+and rationale; matching style never flags a replace; a user-confirmed item is never flagged regardless
+of style mismatch. `test_prompt_builder.py` — no "redecorate" instruction survives in any prompt; a
+replaced item gets "Replace the existing X..." wording, never "Add...". Full suite: see result below.
+
+**Also applied in this batch (ponytail-review):** the three HTTP-based render providers (Cloudflare,
+Hugging Face, Hugging Face Kontext) each hand-rolled the same POST→status-check→JSON-parse→error-wrap
+block. Extracted to `post_json_or_raise()` in `ai/visualization/providers/base.py` — one implementation,
+three callers, ~30 fewer lines, no behavior change (confirmed by the existing provider test suites
+passing unchanged).
+
+**Side effect noticed while re-running the suite repeatedly today:** the plain
+`HuggingFaceImageProvider`'s live test started hitting the same `402 "depleted"` response as the
+Kontext provider's — both share one account-wide Hugging Face free credit pool, and enough real test
+runs in one session exhausted it entirely (not just the Kontext-specific slice noted in the 2026-09-18
+entry above). Applied the identical skip-not-fail treatment to `test_huggingface_provider.py`'s live
+test for consistency.
+
+## D003 extended again: paid OpenAI fallback, both free options exhausted — 2026-09-18
+
+Same day as the Hugging Face Kontext addition above, its free credit pool ran dry (documented there).
+The user still wanted structure-preserving renders and offered a key they already had: OpenAI.
+Verified live rather than assumed correct from docs — `GET /v1/models/gpt-image-1` research first
+confirmed `gpt-image-1` (the original model) is being **retired 2026-10-23**; built against
+`gpt-image-1-mini` instead (cheap, still does genuine image-to-image editing, not text-to-image).
+
+**Built:** `ai/visualization/providers/openai_edit.py` (`OpenAIImageEditProvider`,
+`structure_preserving = True`). `POST /v1/images/edits`, multipart form: the room photo (converted to
+PNG defensively — uploads are stored as JPEG and the edits endpoint requires PNG; converting locally
+avoids wasting a paid call on a format-rejection 400), the prompt, `model=gpt-image-1-mini`,
+`quality=low`, `size=1024x1024`. Wired into `build_default_providers()` as the third
+structure-preserving option, after the two free ones (Gemini, Hugging Face Kontext) and before the two
+non-structure-preserving fallbacks (Cloudflare, plain Hugging Face) — chain is now: Gemini → HF Kontext
+→ **OpenAI (paid)** → Cloudflare → HF FLUX → cache → floor plan.
+
+**Explicit cost-discipline instruction from the user, honored directly in the code, not just the
+report:** "usage of key is as minimal as possible, and is not overused." Concretely:
+- `quality="low"` is hardcoded in the provider, not a caller-settable parameter someone could
+  accidentally crank up later.
+- The one live test that spends real money (`tests/test_openai_provider.py::test_real_live_call_...`)
+  is gated behind an **explicit** opt-in env var (`RUN_LIVE_OPENAI_TEST=1`), not just "token present."
+  The Hugging Face providers' live tests used exactly that weaker skip condition and, as a direct
+  result, ran on every single `pytest tests/` invocation this session — which is exactly what burned
+  through that entire free credit pool in a few hours (see the entry above). A paid key must not repeat
+  that mistake; it ran live tests dozens of times today without anyone deciding to spend anything.
+- The live test itself was run exactly once, with the user's explicit real-time confirmation
+  immediately beforehand ("ready to spend a fraction of a cent, go ahead?" / "yes") — not silently, and
+  not automatically bundled into a routine full-suite run.
+- The user's key was never read via any tool that would surface its value in this conversation
+  (no `Read` on `.env`, no `cat`/echoed `grep`) — every command that needed it loaded it directly into
+  a subprocess's environment (`docker compose`'s own `env_file: .env`, or `load_dotenv()` inside the
+  test process) without the raw value ever appearing in anything written back to this conversation.
+
+**Also fixed along the way:** `docker compose restart backend` does NOT reload `.env` — it only
+restarts the existing container process; the new `OPENAI_API_KEY` didn't show up in
+`build_default_providers()`'s output until `docker compose up -d --force-recreate backend` actually
+recreated the container against the current `.env`. Worth remembering for any future env var change
+made while the stack is already running via Compose.
+
+**Ponytail-driven refactor while building this:** the multipart-POST shape needed by this provider is
+the same status-check/JSON-parse pattern as the existing JSON-POST providers (`post_json_or_raise`,
+`ai/visualization/providers/base.py`) — split out the shared `_raise_for_status_and_parse_json()` core
+so a new `post_multipart_or_raise()` could reuse it instead of re-deriving the same error handling a
+fourth time.
+
+**Tests:** `tests/test_openai_provider.py` — 10 tests: missing-key, successful decode, non-200,
+missing/malformed response, network failure, an unreadable-input-bytes case (asserts `requests.post`
+is never even called — never spend a call on an input that can't be prepared), a regression guard that
+`quality` is always `"low"`, `structure_preserving is True`, and the one opt-in-gated live call
+(passed, real image edit produced and confirmed >1000 bytes). 9 run + pass by default; the live one
+skips unless both `OPENAI_API_KEY` and `RUN_LIVE_OPENAI_TEST=1` are set.
+
+## User-requested: real product thumbnails, a better-visualized layout, a feedback "crash" report — 2026-09-18
+
+Three separate items in one message.
+
+**1. "Color the walls red" feedback appeared to crash.** Investigated before touching anything: the
+exact feedback text, run through both a clean isolated reproduction (all render-provider keys
+stripped, so no cost risk) and a check of the real running app's own logs for the user's actual
+session, completed successfully both times — job done, 200s throughout, no exception anywhere in the
+backend. Also noticed the user had submitted the same feedback 3 times within ~30 seconds, which reads
+as "the UI seemed frozen so I retried," not "it errored visibly." Traced the frontend's polling
+component (`JobProgress.tsx`) and found a real, if latent, bug while looking: its `useEffect`
+depended on `[jobId, onDone, onError]`, but every caller (`FeedbackBox`, others) defines those
+callbacks as plain functions redefined on every render — so ANY unrelated re-render of the parent
+while a job is in flight tears down and recreates the poll interval, firing an extra immediate
+`poll()`. Fixed at the shared component (root cause, not a per-caller patch — matches this project's
+own "fix once where all callers route through" bug-fix discipline): `onDone`/`onError` are now read
+through refs updated every render, so the effect's only real dependency is `jobId` — polling
+continuity no longer depends on callback identity. Could not confirm this was THE cause at the time
+(no crash had been reproduced yet) but was a genuine defect worth fixing regardless.
+
+**Real root cause, found after adding an error boundary (below) surfaced the actual browser error —
+"Cannot read properties of null (reading 'budget_delta')":** discovered the backend container itself
+had been running STALE code the whole time — Flask doesn't hot-reload, and it hadn't been restarted
+since before several rounds of fixes earlier this session. Restarted it (`docker compose restart
+backend`), which turned out not to be the actual crash but was a real, separate problem worth fixing
+regardless (several backend features were silently not live for a while). The real crash was a bug
+in `FeedbackBox.tsx`'s `handleDone`, introduced when it was rewritten as a chat thread: the
+`setMessages` state updater is a closure `(prev) => [...]` that React calls LAZILY — not at the
+`setMessages(...)` call site — but the code read `pendingDeltas.current` *inside* that lazy closure
+and then, on the very next line, reset `pendingDeltas.current = null`. By the time React actually
+invoked the updater, the ref had already been nulled — `describeDeltas(null, ...)` then threw trying
+to read `null.budget_delta`. Classic stale-closure-vs-eager-mutation race. Fixed by computing the
+message text eagerly, synchronously, before resetting the ref — the updater closure now only
+receives an already-computed string, never touches the ref itself. No frontend test framework exists
+in this project (frontend verification has been live/manual throughout, unlike the backend's pytest
+discipline) — adding one is a real tooling decision, not made silently for one regression guard; the
+fix was verified by re-running the exact failing flow live in the browser afterward.
+
+**Also added while debugging this:** `frontend/src/components/ErrorBoundary.tsx`, wrapping the whole
+app in `main.tsx`. Before this, ANY uncaught render error anywhere in the tree unmounted the entire
+app and left a blank page with zero clue what happened — which is exactly what made this bug look
+like "the page crashed" with no diagnostic information, and is what actually let it get diagnosed
+once added (the real error message only became visible because of this boundary).
+
+**2. Real product thumbnails, replacing the 2026-09-09 placeholder decision.** That decision (picsum.photos
+placeholders, to avoid hotlinking ToS/copyright risk) was explicit and disclosed, not an oversight — see
+the entry above. The user was told the trade-off directly and chose to hotlink real retailer images
+anyway. Sourced the same way the original real-catalog research was done: 4 parallel background
+research agents (WebFetch, `r.jina.ai` as a read-through proxy wherever a retailer's Akamai
+bot-detection blocked a direct fetch — Pepperfry's `ii1.pepperfry.com` CDN in particular), each
+required to find the product's real `og:image`/main-photo URL and verify it actually resolves to
+image content (not an HTML error page, not a 404/403) before reporting it back — never guessed or
+pattern-matched from a product name. All 30/30 items found and verified; zero "NOT FOUND" cases this
+time. `scripts/seed_catalog.py`'s `image_url` column updated for all 30 rows;
+`RecommendationCard.tsx`'s disclosure text updated from "the photo shown is a stand-in" to "the photo
+is the retailer's own product image" (the `product_url` link was always the load-bearing fact and
+still is — if a hotlinked image ever breaks when a retailer reorganizes its CDN, that link keeps
+pointing at the genuine item regardless).
+
+**3. Layout floor plan, "better visualized."** `ai/visualization/floorplan.py` (the deterministic,
+always-available SVG renderer — decisions D001/D003) was functional but plain: same flat color for
+every new item regardless of what it was, no scale reference, no dimensions shown, doors drawn as a
+flat colored line with no indication of which way they open. Added, all using data the layout
+optimizer already computes (nothing fabricated for the sake of looking nicer):
+- **Per-category coloring** for recommended items (sofa/bed/chair/table/cabinet/shelf/lighting/
+  rug/curtain/decor each get a distinct fill/stroke) — falls back to the old flat green when a
+  category is unknown. The DB-loaded `/floorplan` endpoint path needed a small addition to support
+  this: a saved `LayoutObject` row has no `category` column of its own (only `catalog_item_id`), so
+  `_render_floorplan_for_session` now resolves it via one batched `FurnitureCatalogItem` query and
+  decorates each object transiently (never committed) before rendering — a fresh `optimize_layout()`
+  result already carries `category` natively via `FurnitureItem`, so only the read-back path needed this.
+- **A 50cm scale grid** and **room dimension labels** (the room's actual width/length in cm) — so
+  the diagram reads as a real measured space, not an arbitrary-sized drawing.
+- **Per-item size labels** ("180×90 cm") for items with enough room to show them without crowding —
+  skipped for small items to avoid clutter, not shown as a blanket feature.
+- **A door swing arc**, drawn from the real `DOOR_SWING_CLEARANCE_CM` geometry the layout optimizer's
+  own hard constraint already reasons about (`ai/layout_optimization/constraints.py`) — explicitly
+  documented as illustrative, not exact: which side a door is hinged on isn't part of the data model,
+  so the arc always curves in from the opening's start corner, an approximation stated as such in the
+  code, not presented as a measured fact.
+
+**Tests:** `tests/test_floorplan.py` (new, 8 tests) — dimension labels present, grid lines drawn,
+category color applied for a known category, unknown category falls back correctly, size labels
+shown only for large-enough items, exactly one swing arc per door (never for a window), existing
+items never take a category color even when one is set, and a no-crash check for an empty room.
+
+## Wall-color feedback + the actual "feedback crash" root cause found — 2026-09-18
+
+After the error boundary above surfaced a real browser error for the first time, the true root cause
+of the reported "crash" turned out to be a stale-closure race in `FeedbackBox.tsx` (documented in the
+entry above where it was found and fixed). Separately, the user then pointed out that even without
+crashing, "change the wall paint to red" produced "No specific change was detected" — correct given
+the schema, but not useful. Real, disclosed gap: nothing in this system has ever modeled wall color —
+only furniture is a catalog concept, and there is no "wall" catalog item to recommend against.
+
+**Built:** `wall_color` added to the feedback `structured_deltas` schema
+(`backend/services/feedback_service.py`) — detected by a small fixed color-word list paired with the
+literal word "wall" (deliberately not free-text color matching like `ai/recommendation/color.py`; an
+image-editing prompt needs one concrete word, not a fuzzy preference). Threaded through
+`backend/services/pipeline_stages.py` the same way `keep_item_ids`/`crowding_shift` already are (read
+from the latest `Feedback` row at generate-time) — but unlike those, `wall_color` reaches ONLY
+`ai/visualization/prompt_builder.py`'s `build_edit_prompt()`, never `generate_recommendation()` or
+the layout optimizer, since there's genuinely nothing there for it to affect. `build_edit_prompt`
+gained an explicit `"Paint the walls {color}, keeping their exact shape, position, and texture."`
+sentence, and the leading "keep everything unchanged" sentence now excludes wall color specifically
+when this is set, so the two instructions don't contradict each other.
+
+**Also fixed, found live while verifying the model name mattered:** `feedback_service.py`'s Gemini
+path was calling a deprecated model (`gemini-2.5-flash` — "no longer available to new users" per a
+real 404 seen in the backend logs), silently falling back to the rule-based parser every time,
+un-noticed until now. Verified the replacement live (`gemini-3.6-flash`, a real call, not assumed
+from docs) before changing the code. This means Gemini-based feedback parsing — richer than the fixed
+rule-based patterns — should now actually engage when `GEMINI_API_KEY` is set, not silently fail over
+every time.
+
+**Tests:** `test_feedback_service.py` — wall color detected only when paired with "wall", not from a
+color word alone (e.g. "a red sofa" must not trigger it), and no false positive with no recognized
+color word. `test_prompt_builder.py` — wall-color instruction appears and the kept-unchanged sentence
+excludes it when set; no wall-color sentence when not requested. Full run: 32/32 new+existing feedback/
+prompt-builder tests passing (one run took ~17 minutes — Gemini's text model now actually gets called
+and retried under real network/rate conditions, rather than failing over to rules instantly; worth
+knowing if a future test run looks unusually slow, not a hang).
+
+## Real finding: test runs were quietly making real, including paid, provider calls — 2026-09-18
+
+Found while chasing why the full suite went from ~2 minutes to ~13 minutes: a "recognized sample
+room" upload (D022) still writes a genuine file to disk with a real path — only the separate,
+dev-script-only `persist_fixture` path (`scripts/seed_fixture_analysis.py`) uses the `"FIXTURE:"`
+marker that `_attempt_visualization` skips. Every integration test that uploads a sample room and
+calls `/generate` or `/feedback` (most of `test_design_comparison.py`, `test_feedback_api.py`, others)
+was therefore eligible to run the REAL render-provider fallback chain — because tests never stripped
+`GEMINI_API_KEY`/`CLOUDFLARE_*`/`HUGGINGFACE_API_TOKEN`/`OPENAI_API_KEY` from the environment, and
+`.env` gets loaded automatically by `backend/config.py` at import time.
+
+**Concrete evidence, checked directly, not estimated:** `generated/render_cache/` — shared between
+the real running app and every local pytest run, since both use the same relative `./generated` path
+— picked up 16 new real entries today. Checked file signatures directly: **7 are 1024×1024 PNGs**,
+which only OpenAI's `gpt-image-1-mini` produces in this codebase (Cloudflare/HF free providers
+produce JPEG) — meaning **7 real, paid OpenAI calls happened today**, not the 1 the user explicitly
+confirmed before running. At the provider's own published low-quality-1024×1024 rate (~$0.005–0.01
+each), that's roughly $0.03–0.07 total — small in absolute terms, but a real violation of the user's
+explicit instruction ("usage of key is as minimal as possible, and is not overused"), happening
+silently as a side effect of routine test runs, not a deliberate, confirmed action. Disclosed here in
+full rather than glossed over.
+
+**First fix attempted, and why it was wrong:** stripping the 5 provider env vars inside `tests/conftest.py`'s
+`app` fixture (via a hand-rolled pop/restore, then via `monkeypatch.delenv` — neither mattered, see
+below). This seemed properly scoped — only tests using `app` would be affected — but it broke 3
+completely unrelated, standalone provider test files
+(`test_cloudflare_provider.py`/`test_huggingface_provider.py`/`test_huggingface_kontext_provider.py`)
+with a `KeyError` on their own token, even run in total isolation with zero other test files present.
+Root cause, found by direct experiment (checking `os.environ` contents live inside a debug test):
+`_clean_tables` (the existing autouse fixture that truncates tables between tests) takes `app` as a
+parameter — since it's `autouse=True`, pytest silently instantiates `app` (and therefore ran the
+stripping) for **literally every test in the suite**, including ones that never request `app`
+themselves. The standalone provider tests never asked for `app` and had no idea it was running behind
+the scenes anyway.
+
+**Actual fix:** patch the function, not the environment. A new `autouse=True` fixture,
+`_no_real_render_providers`, monkeypatches `ai.visualization.render_service.build_default_providers`
+itself to always return `[]`. This only affects whoever actually *calls* that function
+(`_attempt_visualization` inside `backend/services/pipeline_stages.py`) — the standalone provider
+test files never call it at all (they construct `CloudflareImageProvider`/`OpenAIImageEditProvider`/
+etc. directly), so they're completely unaffected regardless of `app`'s autouse instantiation. Had to
+patch the specific module the name is imported from, not `pipeline_stages` itself:
+`_attempt_visualization` does a LOCAL `from ai.visualization.render_service import
+build_default_providers` inside its own function body (re-executed fresh on every call, not a
+one-time module-level import), so patching an attribute on `pipeline_stages` would have silently done
+nothing. Verified: all 3 previously-broken standalone provider tests pass again (Cloudflare's live
+test genuinely succeeded with a real call), and no `/generate`/`/feedback` test triggers any real
+provider call anymore.
+
+**Gemini feedback-parsing text calls are UNAFFECTED by this fix** (deliberately) — `_gemini_parse`
+lives entirely outside the render-provider chain this fixture patches, so `test_feedback_api.py`'s
+feedback submissions still exercise the real, free Gemini text model exactly as
+`test_feedback_service.py`'s do. Only the render/visualization side (paid or quota-limited) is ever
+blocked during routine test runs.
+
+**Also found and fixed while investigating the slowdown:** the Gemini feedback-parsing call itself
+(`_gemini_parse`) runs synchronously inside the `/feedback` HTTP request, before the response is even
+sent — a slow/retried Gemini call would hang the user's actual browser request, not just a background
+job. Bounded to an 8-second timeout with no SDK-level retries (`types.HttpOptions(timeout=8000,
+retry_options=types.HttpRetryOptions(attempts=1))`) — the rule-based fallback is fast and good enough,
+so there's no reason to let this non-critical path eat the request's whole latency budget. Verified
+live: a real wall-color feedback call now completes in 1.39s.
+
+**One remaining, understood (not just timeout-bumped) flakiness:** `test_design_comparison.py`'s
+heaviest test runs TWO full generate cycles (~17s alone, confirmed by isolated re-run) against a
+30s poll timeout — comfortable in isolation, occasionally tips over under full-suite CPU contention.
+Bumped that one test's timeout to 60s, matching its actual, now-understood weight, rather than
+guessing or inflating every test's timeout uniformly.
 
 ## Verification approach (applies from Phase 3 onward)
 Each module ships with: a runnable CLI entry point taking a real image/JSON and printing structured output,

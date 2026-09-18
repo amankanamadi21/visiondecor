@@ -8,6 +8,12 @@ Both paths produce the SAME structured schema:
       "style_shift": "<FR-3 style name>" | None,
       "budget_delta": float | None,     # added to (or subtracted from) the current budget
       "crowding_shift": "less" | "more" | None,
+      "wall_color": str | None,         # e.g. "red" — only ever affects the visualization prompt
+                                         # (ai/visualization/prompt_builder.py); there is no "wall"
+                                         # catalog item, so this has no effect on recommendation/
+                                         # layout scoring at all — added 2026-09-18 after a user's
+                                         # "change the wall paint to red" feedback correctly, but
+                                         # unhelpfully, produced "no specific change was detected."
       "notes": str,                     # anything the parser recognized but didn't structure
     }
 
@@ -31,13 +37,31 @@ _PRICIER_PATTERNS = [r"\bmore expensive\b", r"\bincrease (the )?budget\b", r"\bb
 _LESS_CROWDED_PATTERNS = [r"\bless crowded\b", r"\bmore open\b", r"\bmore space\b", r"\btoo (much|many)\b", r"\bless cluttered\b"]
 _MORE_FULL_PATTERNS = [r"\bmore furniture\b", r"\bmore items\b", r"\badd more\b"]
 
+# Deliberately a small, fixed word list (not free-text color matching like
+# ai/recommendation/color.py) — an image-editing prompt needs one concrete
+# color word, not a fuzzy "warm neutrals"-style preference.
+_WALL_COLOR_WORDS = [
+    "red", "blue", "green", "yellow", "orange", "purple", "pink", "black", "white",
+    "gray", "grey", "brown", "beige", "cream", "navy", "teal", "maroon", "olive",
+    "turquoise", "gold", "silver", "charcoal", "lavender", "mint",
+]
+
+
+def _extract_wall_color(text: str) -> str | None:
+    if "wall" not in text:
+        return None
+    for color in _WALL_COLOR_WORDS:
+        if re.search(rf"\b{color}\b", text):
+            return color
+    return None
+
 BUDGET_DELTA_FRACTION = 0.15  # a fixed, documented heuristic — not user-tunable, not a model weight
 
 
 def _empty_deltas() -> dict:
     return {
         "keep_item_ids": [], "remove_item_ids": [], "style_shift": None,
-        "budget_delta": None, "crowding_shift": None, "notes": "",
+        "budget_delta": None, "crowding_shift": None, "wall_color": None, "notes": "",
     }
 
 
@@ -98,6 +122,8 @@ def _rule_based_parse(raw_text: str, current_items: list[dict], current_budget: 
     elif any(re.search(p, text) for p in _MORE_FULL_PATTERNS):
         deltas["crowding_shift"] = "more"
 
+    deltas["wall_color"] = _extract_wall_color(text)
+
     return deltas
 
 
@@ -111,14 +137,29 @@ Respond with ONLY a JSON object with these exact keys:
 - style_shift: one of {styles} or null
 - budget_delta: a number (positive or negative) or null
 - crowding_shift: "less", "more", or null
+- wall_color: a single color word (e.g. "red") if the feedback asks to change the wall color/paint, or null
 - notes: a short string for anything else relevant
 
 Do not include any text other than the JSON object."""
 
 
+# This call happens synchronously inside the feedback HTTP request, before
+# the response is even sent (see backend/api/feedback.py) — a slow or
+# retried Gemini call would make the user's browser hang on that request,
+# not just a background job. Bounded to a few seconds with no retries: the
+# rule-based fallback below is fast and good enough, so there's no reason
+# to let this path eat the request's whole latency budget waiting on
+# Gemini's own retry/backoff for a non-critical path. Found live (2026-09-18):
+# fixing this model's deprecated name (see module history) made Gemini
+# actually get called instead of 404-ing instantly, and a full test suite
+# run went from ~2 minutes to ~13 minutes as a direct result.
+_GEMINI_TIMEOUT_MS = 8000
+
+
 def _gemini_parse(raw_text: str, current_items: list[dict], current_budget: float, api_key: str) -> dict | None:
     try:
         from google import genai
+        from google.genai import types
     except ImportError:
         return None
 
@@ -126,8 +167,13 @@ def _gemini_parse(raw_text: str, current_items: list[dict], current_budget: floa
     prompt = _GEMINI_EXTRACTION_PROMPT_TEMPLATE.format(items_desc=items_desc, raw_text=raw_text, styles=FR3_STYLES)
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=[prompt])
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=_GEMINI_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)
+            ),
+        )
+        response = client.models.generate_content(model="gemini-3.6-flash", contents=[prompt])
         text = response.text.strip()
         if text.startswith("```"):
             text = text.strip("`").removeprefix("json").strip()

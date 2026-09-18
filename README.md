@@ -112,14 +112,18 @@ Photorealistic rendering needs at least one of these; without any, the app still
 using the deterministic floor plan as the visualization (never a hard requirement, per this
 project's own design):
 
-| Provider | Free tier | Structure-preserving? |
+| Provider | Cost | Structure-preserving? |
 |---|---|---|
 | Gemini (`GEMINI_API_KEY`) | Free tier currently grants 0 image-generation quota (a policy change discovered live, 2026-09-07) — implemented and wired correctly, not currently usable without billing | Yes — real image editing |
+| Hugging Face Kontext (`HUGGINGFACE_API_TOKEN`, `FLUX.1-Kontext-dev` via the `fal-ai` route) | Free tier, no card — shares the same token/allotment as the Hugging Face row below; a handful of real calls exhausted it during this session (2026-09-18) | Yes — real image-to-image editing, live-verified 2026-09-18 against a real uploaded photo |
+| OpenAI (`OPENAI_API_KEY`, `gpt-image-1-mini`) | Paid, cheap — well under a cent per edit at `quality=low`/1024×1024, hardcoded (not a tunable knob) | Yes — real image editing via `/v1/images/edits`, live-verified 2026-09-18 |
 | Cloudflare Workers AI (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`) | 10,000 free "neurons"/day, no card | No — text-to-image only; the UI discloses this per-render |
-| Hugging Face (`HUGGINGFACE_API_TOKEN`) | Free tier, no card | No — text-to-image only; same disclosure |
+| Hugging Face FLUX (`HUGGINGFACE_API_TOKEN`) | Free tier, no card | No — text-to-image only; same disclosure |
 
-Tried in that order; the first one configured and working serves the request, so having all three
-configured just makes the render path more resilient, not different in kind.
+Tried in that order; the first one configured and working serves the request. Both free
+structure-preserving options (Gemini, Hugging Face Kontext) were exhausted as of 2026-09-18, so OpenAI
+is what actually serves most requests right now — the only reliable option that preserves the room's
+real structure until one of the free tiers resets.
 
 ## Verifying it
 
@@ -178,10 +182,10 @@ datasets/   gitignored — evaluation datasets (Houzz styles, COCO subset), down
   `price_verified_at` so a stale price reads as stale, not as live. 11 of 30 items are the closest
   in-stock real match rather than an exact match to the original concept, or have one
   retailer-unstated dimension estimated — every such deviation is flagged inline in
-  `scripts/seed_catalog.py` and in `PLAN.md`, never silently substituted. One deliberate exception:
-  `image_url` is still a placeholder stock photo, not a hotlinked retailer photo (avoids third-party
-  image ToS/copyright issues) — the "View real product ↗" link, not the thumbnail, is what actually
-  points at the genuine item.
+  `scripts/seed_catalog.py` and in `PLAN.md`, never silently substituted. `image_url` hotlinks each
+  product's real retailer photo (2026-09-18, at the user's request, superseding the earlier
+  placeholder-stock-photo default) — every one of the 30 URLs was fetched and verified live, never
+  guessed from a product name.
 - **A detection's pixel bounding box alone never becomes a real position or size** — a single 2D
   photo has no depth information to derive one honestly. By default, confidently-detected chair/
   couch/bed/table items only reduce the estimated free floor space (using the catalog's own real
@@ -193,8 +197,10 @@ datasets/   gitignored — evaluation datasets (Houzz styles, COCO subset), down
   threshold (mAP@50 0.53) — it misses many small/occluded objects, a real, measured trade-off of
   the smallest/fastest YOLO variant chosen for CPU inference.
 - **Gemini's free tier currently grants zero image-generation quota** (confirmed live, not
-  assumed); Cloudflare covers the free-tier gap but is not structure-preserving, disclosed
-  per-render in the UI.
+  assumed); the free Hugging Face Kontext provider now covers the free-tier gap with genuine,
+  structure-preserving image editing (live-verified against a real photo, 2026-09-18) — Cloudflare
+  and the plain Hugging Face FLUX provider remain as text-to-image-only fallbacks below it, disclosed
+  per-render in the UI whenever one of those ends up serving the request.
 - **No shareable public link yet** — only a personal PDF export. A public link is a genuinely new
   privacy surface (permanent vs. revocable, what data is safe to expose) not yet decided.
 - **Style/detection evaluation uses public datasets, not this project's own users' photos** — see

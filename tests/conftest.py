@@ -102,6 +102,41 @@ def app():
     yield application
 
 
+# No real render-provider call ever happens as a side effect of the full
+# app stack (below) — visualization is exercised honestly only via each
+# provider's OWN dedicated, opt-in-gated test file (test_openai_provider.py
+# etc.), never via an unrelated integration test. Found live 2026-09-18: a
+# recognized sample room still writes a genuine file path on disk (not the
+# "FIXTURE:" dev-only marker persist_fixture uses), so without this,
+# _attempt_visualization would call real — for OpenAI, PAID — providers on
+# every generate/feedback test that uploads a sample room, an unintended
+# cost/quota-usage side effect the user explicitly asked to avoid ("usage
+# of key is as minimal as possible, and is not overused"). Confirmed via
+# the shared render_cache directory picking up new real entries during
+# routine test runs.
+#
+# Patches the FUNCTION, not os.environ — stripping the provider env vars
+# was tried first, but `_clean_tables` below is autouse and depends on
+# `app`, so pytest silently instantiates `app` for literally every test in
+# the suite, including the standalone provider test files that never
+# request it and legitimately need their own token to stay real. That made
+# their own live tests fail with a KeyError as an unintended side effect of
+# this very fix. Patching `build_default_providers` instead only affects
+# whoever actually calls it (`_attempt_visualization`) — the standalone
+# provider files never do, since they construct their provider classes
+# directly.
+@pytest.fixture(autouse=True)
+def _no_real_render_providers(monkeypatch):
+    # Patched at the source module — _attempt_visualization does a LOCAL
+    # `from ai.visualization.render_service import build_default_providers`
+    # inside its own function body (not a `pipeline_stages.<name>` module
+    # attribute lookup), re-importing fresh on every call. Patching
+    # `pipeline_stages.build_default_providers` would silently do nothing.
+    import ai.visualization.render_service as render_service
+
+    monkeypatch.setattr(render_service, "build_default_providers", lambda *args, **kwargs: [])
+
+
 @pytest.fixture()
 def client(app):
     return app.test_client()

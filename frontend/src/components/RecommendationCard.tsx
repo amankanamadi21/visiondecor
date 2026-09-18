@@ -40,8 +40,8 @@ export function RecommendationCard({ item }: { item: RecommendationItem }) {
         </div>
         {!isMock && c.price_verified_at && (
           <p className="recommendation-card__verified">
-            Real product — price and link verified {c.price_verified_at}. The photo shown is a stand-in,
-            not the retailer's own product image.
+            Real product — price and link verified {c.price_verified_at}. The photo is the retailer's
+            own product image.
           </p>
         )}
         <div className="recommendation-card__scores">

@@ -33,3 +33,40 @@ class RenderProvider(ABC):
         """Returns the rendered image's bytes (JPEG/PNG). Raises
         RenderUnavailableError if this provider cannot serve the request."""
         raise NotImplementedError
+
+
+def _raise_for_status_and_parse_json(provider_name: str, response) -> dict:
+    if response.status_code != 200:
+        raise RenderUnavailableError(f"{provider_name} returned HTTP {response.status_code}: {response.text[:200]}")
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RenderUnavailableError(f"{provider_name} response was not valid JSON: {exc}") from exc
+
+
+def post_json_or_raise(provider_name: str, url: str, headers: dict, json: dict, timeout: int) -> dict:
+    """Shared POST -> status-check -> JSON-parse shape used by every
+    JSON-body HTTP provider (Cloudflare, Hugging Face, Hugging Face
+    Kontext) — only the response payload's field layout differs between
+    them, so that's all each provider still handles itself."""
+    import requests
+
+    try:
+        response = requests.post(url, headers=headers, json=json, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 — network failure means "try the next provider"
+        raise RenderUnavailableError(f"{provider_name} request failed: {exc}") from exc
+
+    return _raise_for_status_and_parse_json(provider_name, response)
+
+
+def post_multipart_or_raise(provider_name: str, url: str, headers: dict, files: dict, data: dict, timeout: int) -> dict:
+    """Same shape as post_json_or_raise, for a multipart/form-data POST
+    (OpenAI's edits endpoint takes a file, not a JSON body)."""
+    import requests
+
+    try:
+        response = requests.post(url, headers=headers, files=files, data=data, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001
+        raise RenderUnavailableError(f"{provider_name} request failed: {exc}") from exc
+
+    return _raise_for_status_and_parse_json(provider_name, response)

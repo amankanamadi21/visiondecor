@@ -149,6 +149,8 @@ export interface StyleResult {
   // origin as the frontend). Real photos: a backend-relative
   // /api/sessions/.../original-photo (needs API_BASE). null if unavailable.
   original_photo_url: string | null;
+  free_space_ratio: number | null;
+  room_condition: string;
 }
 
 export interface LayoutObject {

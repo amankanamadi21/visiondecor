@@ -28,6 +28,17 @@ interface JobProgressProps {
 export function JobProgress({ jobId, onDone, onError }: JobProgressProps) {
   const [job, setJob] = useState<Job | null>(null);
   const intervalRef = useRef<number | null>(null);
+  // Callers (FeedbackBox, NewDesignPage, ...) pass onDone/onError as plain
+  // functions redefined on every render, not memoized with useCallback.
+  // Depending on them directly would restart this effect — tearing down and
+  // recreating the poll interval, firing an extra immediate poll() — on
+  // every unrelated re-render of the parent while a job is in flight. Refs
+  // let the effect call whatever the latest callback is without needing it
+  // in the dependency array, so polling continuity depends only on jobId.
+  const onDoneRef = useRef(onDone);
+  const onErrorRef = useRef(onError);
+  onDoneRef.current = onDone;
+  onErrorRef.current = onError;
 
   useEffect(() => {
     let cancelled = false;
@@ -39,10 +50,10 @@ export function JobProgress({ jobId, onDone, onError }: JobProgressProps) {
         setJob(res.job);
         if (res.job.status === "done") {
           if (intervalRef.current) window.clearInterval(intervalRef.current);
-          onDone?.(res.job);
+          onDoneRef.current?.(res.job);
         } else if (res.job.status === "failed") {
           if (intervalRef.current) window.clearInterval(intervalRef.current);
-          onError?.(res.job);
+          onErrorRef.current?.(res.job);
         }
       } catch {
         // A transient network hiccup shouldn't kill the poll loop; it will
@@ -56,7 +67,7 @@ export function JobProgress({ jobId, onDone, onError }: JobProgressProps) {
       cancelled = true;
       if (intervalRef.current) window.clearInterval(intervalRef.current);
     };
-  }, [jobId, onDone, onError]);
+  }, [jobId]);
 
   if (!job) return <div className="job-progress">Starting…</div>;
 

@@ -214,3 +214,29 @@ def test_confident_real_detections_reduce_free_space_but_never_place_an_object(c
 
     layout = client.get(f"/api/sessions/{session_id}/layout").json["layout"]
     assert not any(obj["is_existing"] for obj in layout["objects"])
+
+
+def test_style_response_exposes_a_plain_language_room_condition(client, csrf_headers):
+    """2026-09-18: a real free_space_ratio should surface as a readable
+    sentence the user actually sees before recommendations run, not just an
+    internal number used by the scoring engine."""
+    _register_and_login(client)
+    session_id = _create_session(client, csrf_headers)
+
+    with open(REAL_PHOTO, "rb") as f:
+        photo_bytes = f.read()
+    data = {
+        "image": (io.BytesIO(photo_bytes), "room.jpg", "image/jpeg"),
+        "room_width_cm": "400", "room_length_cm": "500",
+    }
+    resp = client.post(
+        f"/api/sessions/{session_id}/image", data=data, content_type="multipart/form-data",
+        headers=csrf_headers(),
+    )
+    job = _poll_job_to_terminal(client, resp.json["style_job_id"])
+    assert job["status"] == "done", job
+
+    style = client.get(f"/api/sessions/{session_id}/style").json
+    assert style["free_space_ratio"] is not None  # this fixture photo has a confident, mapped detection
+    assert isinstance(style["room_condition"], str) and len(style["room_condition"]) > 0
+    assert "estimated" in style["room_condition"].lower()  # real photo -> worded as an estimate, not a fact

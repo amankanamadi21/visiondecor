@@ -310,6 +310,7 @@ def load_room_model_from_db(db: Session, analysis: RoomAnalysis, room_type: str)
                     height_cm=obj.confirmed_height_cm, x_cm=obj.confirmed_x_cm, y_cm=obj.confirmed_y_cm,
                     rotation_deg=obj.confirmed_rotation_deg or 0,
                     is_existing=True, category=DETECTION_TO_CATALOG_CATEGORY.get(obj.class_label),
+                    user_confirmed=True,
                 )
             )
             continue

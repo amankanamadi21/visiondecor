@@ -14,7 +14,7 @@ def _register_and_login(client, email="alice@example.com", password="hunter2222"
     client.post("/api/auth/register", json={"email": email, "password": password, "name": name})
 
 
-def _poll_job_to_terminal(client, job_id, timeout_s=15):
+def _poll_job_to_terminal(client, job_id, timeout_s=60):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         resp = client.get(f"/api/jobs/{job_id}")

@@ -54,6 +54,55 @@ def test_existing_items_are_mentioned_as_kept():
     assert "keep" in prompt.lower()
 
 
+def test_no_full_room_redecorate_instruction():
+    # Regression guard (2026-09-18): a real user's uploaded photo came back
+    # as an unrecognizable room because this prompt used to lead with
+    # "Redecorate this room in {style} style" — an instruction to restyle
+    # everything, not just the actual recommended changes. See PLAN.md.
+    fixture = FIXTURES["bedroom_small_scandinavian"]
+    result = optimize_layout(fixture.room, SPECS[:1], iterations=200)
+    all_items = [*fixture.room.existing_furniture, *result.placed_items]
+    prompt = build_edit_prompt(fixture.room, all_items, style="Scandinavian")
+    assert "redecorate" not in prompt.lower()
+    assert "except" in prompt.lower()
+
+
+def test_replace_wording_for_a_replaced_item():
+    fixture = FIXTURES["bedroom_small_scandinavian"]
+    result = optimize_layout(fixture.room, SPECS[:1], iterations=200)
+    # fixture.room.existing_furniture no longer includes "Old Wardrobe" here —
+    # simulating what pipeline_stages.py does once a category is replaced.
+    remaining_existing = [f for f in fixture.room.existing_furniture if f.label != "Old Wardrobe"]
+    new_item = result.placed_items[0]
+    new_item.catalog_item_id = 999
+    all_items = [*remaining_existing, new_item]
+    prompt = build_edit_prompt(
+        fixture.room, all_items, style="Industrial", replaces_by_catalog_id={999: ["Old Wardrobe"]}
+    )
+    assert "Replace the existing Old Wardrobe with" in prompt
+    assert "Add a" not in prompt  # the replaced item must use "Replace", not "Add"
+
+
+def test_wall_color_adds_explicit_instruction_and_excludes_walls_from_kept_list():
+    fixture = FIXTURES["bedroom_small_scandinavian"]
+    result = optimize_layout(fixture.room, SPECS[:1], iterations=200)
+    all_items = [*fixture.room.existing_furniture, *result.placed_items]
+    prompt = build_edit_prompt(fixture.room, all_items, style="Scandinavian", wall_color="red")
+    assert "Paint the walls red" in prompt
+    # The leading "keep everything unchanged" sentence must not also claim
+    # walls stay the same color — that would directly contradict the
+    # explicit instruction above.
+    assert "same walls" not in prompt.lower()
+
+
+def test_no_wall_color_instruction_when_not_requested():
+    fixture = FIXTURES["bedroom_small_scandinavian"]
+    result = optimize_layout(fixture.room, SPECS[:1], iterations=200)
+    all_items = [*fixture.room.existing_furniture, *result.placed_items]
+    prompt = build_edit_prompt(fixture.room, all_items, style="Scandinavian")
+    assert "paint the walls" not in prompt.lower()
+
+
 def test_palette_included_when_provided():
     fixture = FIXTURES["office_contemporary_empty"]
     result = optimize_layout(fixture.room, SPECS[:1], iterations=200)

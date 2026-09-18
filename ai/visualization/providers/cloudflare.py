@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import base64
 
-from ai.visualization.providers.base import RenderProvider, RenderUnavailableError
+from ai.visualization.providers.base import RenderProvider, RenderUnavailableError, post_json_or_raise
 
 MODEL_NAME = "@cf/black-forest-labs/flux-1-schnell"
 REQUEST_TIMEOUT_S = 60
@@ -55,31 +55,10 @@ class CloudflareImageProvider(RenderProvider):
         # accept an input image (see module docstring); the interface still
         # accepts it uniformly across providers so render_service.py doesn't
         # need per-provider branching.
-        try:
-            import requests
-        except ImportError as exc:  # pragma: no cover — dependency always installed per requirements.txt
-            raise RenderUnavailableError(f"requests library not available: {exc}") from exc
-
         url = f"https://api.cloudflare.com/client/v4/accounts/{self._account_id}/ai/run/{MODEL_NAME}"
-        try:
-            response = requests.post(
-                url,
-                headers={"Authorization": f"Bearer {self._api_token}"},
-                json={"prompt": prompt},
-                timeout=REQUEST_TIMEOUT_S,
-            )
-        except Exception as exc:  # noqa: BLE001 — network failure means "try the next provider"
-            raise RenderUnavailableError(f"Cloudflare request failed: {exc}") from exc
-
-        if response.status_code != 200:
-            raise RenderUnavailableError(
-                f"Cloudflare returned HTTP {response.status_code}: {response.text[:200]}"
-            )
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RenderUnavailableError(f"Cloudflare response was not valid JSON: {exc}") from exc
+        payload = post_json_or_raise(
+            "Cloudflare", url, {"Authorization": f"Bearer {self._api_token}"}, {"prompt": prompt}, REQUEST_TIMEOUT_S
+        )
 
         if not payload.get("success") or "image" not in payload.get("result", {}):
             raise RenderUnavailableError(f"Cloudflare response missing image data: {payload}")

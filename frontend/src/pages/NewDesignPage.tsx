@@ -61,6 +61,7 @@ export function NewDesignPage() {
   const [hasKnownDimensions, setHasKnownDimensions] = useState(false);
   const [roomWidthCm, setRoomWidthCm] = useState("");
   const [roomLengthCm, setRoomLengthCm] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [jobId, setJobId] = useState<number | null>(null);
   const [styleJobId, setStyleJobId] = useState<number | null>(null);
   const [styleResult, setStyleResult] = useState<StyleResult | null>(null);
@@ -118,8 +119,12 @@ export function NewDesignPage() {
   }
 
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const chosen = e.target.files?.[0] ?? null;
-    if (chosen) uploadImage(chosen, { width: roomWidthCm, length: roomLengthCm });
+    setSelectedFile(e.target.files?.[0] ?? null);
+  }
+
+  function handleUploadClick() {
+    if (!selectedFile) return;
+    uploadImage(selectedFile, { width: roomWidthCm, length: roomLengthCm });
   }
 
   async function handleUseSample(sampleFile: string) {
@@ -282,6 +287,10 @@ export function NewDesignPage() {
             can't be computed without knowing the room's size.
           </p>
           <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleFileChange} />
+          {selectedFile && <p className="wizard-step__hint">Selected: {selectedFile.name}</p>}
+          <button type="button" onClick={handleUploadClick} disabled={!selectedFile || submitting}>
+            {submitting ? "Uploading…" : "Upload & continue"}
+          </button>
         </div>
       )}
 
@@ -310,6 +319,9 @@ export function NewDesignPage() {
               Detected furniture (below, if any) reduces the free space we plan around, but nothing is placed
               at a specific spot in the layout — a single photo can't measure exact positions.
             </div>
+          )}
+          {styleResult && (
+            <p className="wizard-step__honesty-note room-condition">{styleResult.room_condition}</p>
           )}
           {styleResult && <DetectedObjectsPanel detected={styleResult.detected_objects} />}
           <label>

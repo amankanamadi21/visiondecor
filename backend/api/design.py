@@ -20,6 +20,7 @@ from sqlalchemy import select
 from backend.api.sessions import get_owned_session
 from backend.db import get_session
 from backend.errors import not_found, validation_error
+from backend.models.catalog import FurnitureCatalogItem
 from backend.models.layout import Layout, LayoutObject
 from backend.models.recommendation import Recommendation, RecommendationItem
 from ai.room_analysis.db_adapter import (
@@ -103,6 +104,27 @@ def _detected_objects_dict(analysis: RoomAnalysis, is_sample_room: bool) -> dict
     }
 
 
+def _room_condition_summary(free_space_ratio: float | None, is_sample_room: bool) -> str:
+    """Plain-language read of how crowded the room currently is, from the
+    same `free_space_ratio` already computed for the recommendation engine.
+    For a real photo this is an ESTIMATE derived from confidently-detected
+    furniture's mean catalog footprint (db_adapter._recompute_free_space_ratio)
+    — worded as an estimate, not a precise measurement. A sample room's
+    value is the fixture's given/known ground truth, so it's worded as a
+    plain fact instead. None (nothing confident enough was detected to
+    estimate from) gets an honest "not measured" line, never a fabricated
+    crowding claim."""
+    if free_space_ratio is None:
+        return "Free floor space couldn't be reliably estimated for this photo."
+    pct = round(free_space_ratio * 100)
+    qualifier = "" if is_sample_room else "an estimated "
+    if free_space_ratio < 0.25:
+        return f"This room looks quite crowded — {qualifier}{pct}% of the floor is free, leaving little room to walk or place new furniture."
+    if free_space_ratio < 0.5:
+        return f"This room has a moderate amount of {qualifier}free floor space ({pct}%)."
+    return f"This room has plenty of {qualifier}open floor space ({pct}% free)."
+
+
 @bp.get("/<int:session_id>/style")
 @login_required
 def get_latest_style(session_id: int):
@@ -134,6 +156,8 @@ def get_latest_style(session_id: int):
             "room_length_cm": analysis.room_length_cm,
             "detected_objects": _detected_objects_dict(analysis, is_sample_room),
             "original_photo_url": _original_photo_url(analysis, session_id, is_sample_room),
+            "free_space_ratio": analysis.free_space_ratio,
+            "room_condition": _room_condition_summary(analysis.free_space_ratio, is_sample_room),
         }
     )
 
@@ -471,4 +495,19 @@ def _render_floorplan_for_session(db, session_id: int, layout: Layout) -> str | 
     if analysis is None:
         return None
     loaded = load_room_model_from_db(db, analysis, design_session.room_type or "other")
+
+    # LayoutObject (a saved DB row) has no `category` column of its own —
+    # decorated here, transiently (never committed), purely so the floor
+    # plan can color furniture by category the same way a freshly-optimized
+    # layout's FurnitureItem objects already do natively.
+    catalog_ids = {obj.catalog_item_id for obj in layout.objects if obj.catalog_item_id is not None}
+    if catalog_ids:
+        categories = dict(
+            db.query(FurnitureCatalogItem.id, FurnitureCatalogItem.category)
+            .filter(FurnitureCatalogItem.id.in_(catalog_ids))
+            .all()
+        )
+        for obj in layout.objects:
+            obj.category = categories.get(obj.catalog_item_id)
+
     return render_floorplan_svg(loaded.room, layout.objects, title="Optimized Layout")

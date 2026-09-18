@@ -69,34 +69,62 @@ def build_edit_prompt(
     *,
     style: str,
     palette: dict | None = None,
+    replaces_by_catalog_id: dict[int, list[str]] | None = None,
+    wall_color: str | None = None,
 ) -> str:
     """`all_items` — existing + newly placed FurnitureItem/LayoutObject-like
-    objects (duck-typed the same way ai.visualization.floorplan is)."""
+    objects (duck-typed the same way ai.visualization.floorplan is).
+
+    Deliberately does NOT instruct a full-room redecorate — this is meant to
+    be the same room, edited, not a fresh room in the target style (see
+    PLAN.md, 2026-09-18: a blanket "redecorate this room in {style}" leading
+    instruction was exactly why a real user's uploaded photo came back as an
+    unrecognizable room). Recommendations already only ever add/replace what
+    the recommendation engine (ai/recommendation/scoring.py) actually
+    decided was missing or mismatched — kept items are named explicitly so
+    an editing-capable provider has no reason to touch them.
+
+    `wall_color` (2026-09-18, decision D024 extension): the ONE other
+    explicit, targeted change this function will describe outside of
+    furniture — there is no "wall" catalog item, so a wall-color request
+    from feedback (ai/services/feedback_service.py) has nowhere else to go.
+    When set, the leading "keep everything unchanged" sentence excludes
+    wall color specifically, so it doesn't contradict the explicit
+    instruction added for it below."""
     new_items = [i for i in all_items if not i.is_existing]
     existing_items = [i for i in all_items if i.is_existing]
+    replaces_by_catalog_id = replaces_by_catalog_id or {}
 
+    room_label = room.room_type.replace("_", " ")
+    kept_aspects = "walls, windows, doors, floor, wall art, colors" if not wall_color else "windows, doors, floor, wall art, furniture colors"
     sentences = [
-        f"Redecorate this {room.room_type.replace('_', ' ')} in a {style} interior design style, "
-        f"keeping the room's real walls, windows, doors, and camera perspective unchanged."
+        f"This is a real photo of a {room_label}. Keep everything in the photo exactly as it is — "
+        f"the same {kept_aspects}, and camera perspective — except for the specific additions below."
     ]
+    if wall_color:
+        sentences.append(f"Paint the walls {wall_color}, keeping their exact shape, position, and texture.")
 
     if existing_items:
         kept = ", ".join(i.label for i in existing_items)
-        sentences.append(f"Keep the existing {kept} in place.")
+        sentences.append(f"Keep the existing {kept} in place, unchanged.")
 
     for item in new_items:
         article = _article_for(item.label)
+        replacing = replaces_by_catalog_id.get(item.catalog_item_id)
+        if replacing:
+            # A real image edit, not just updated metadata — the old item is
+            # still visible in the actual photo pixels, so the model needs
+            # to be told explicitly to remove it, or it ends up with both.
+            old = ", ".join(replacing)
+            sentences.append(f"Replace the existing {old} with {article} {item.label.lower()}, in a {style} style.")
+            continue
         nearest = _nearest_existing_item(item, all_items)
-        if nearest is not None:
-            other, _dist = nearest
-            sentences.append(f"Add {article} {item.label.lower()} near the {other.label.lower()}.")
-        else:
-            position = _qualitative_position(item, room)
-            sentences.append(f"Add {article} {item.label.lower()} {position}.")
+        position = f"near the {nearest[0].label.lower()}" if nearest is not None else _qualitative_position(item, room)
+        sentences.append(f"Add {article} {item.label.lower()} {position}, in a {style} style.")
 
-    if palette and palette.get("preferred_colors"):
+    if palette and palette.get("preferred_colors") and new_items:
         colors = ", ".join(palette["preferred_colors"])
-        sentences.append(f"Favor a color palette of {colors} throughout.")
+        sentences.append(f"The new item(s) should use a color palette of {colors}.")
 
     sentences.append(
         "Keep the result photorealistic and proportionally accurate to a real room, "

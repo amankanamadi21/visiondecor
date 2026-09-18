@@ -15,13 +15,13 @@ buried magic numbers, so they're easy to revisit.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ai.recommendation.color import color_match_score
-from ai.recommendation.needs import allocate_budget, needed_categories
+from ai.recommendation.needs import allocate_budget, categorize_existing
 from ai.recommendation.rag import retrieve_principles
 from ai.recommendation.rationale import build_rationale
 from ai.room_analysis.room_model import RoomModel
@@ -45,7 +45,9 @@ class ScoredItem:
     total_score: float
     rationale: str
     category_budget: float
-    action: str = "add"  # "add" | "keep" — set to "keep" only via forced_keep_ids (D024 feedback loop)
+    action: str = "add"  # "add" | "keep" | "replace" — "keep" only via forced_keep_ids (D024), "replace"
+    # only when the room's overall detected style doesn't match preferred_style (see generate_recommendation)
+    replaces_labels: list[str] = field(default_factory=list)  # existing labels this item replaces, if action=="replace"
 
 
 @dataclass
@@ -55,6 +57,11 @@ class RecommendationResult:
     budget: float
     within_budget: bool
     palette: dict
+    # Existing furniture labels that a "replace" item is meant to replace —
+    # the pipeline uses this to drop the old item from the room model before
+    # layout/visualization, so the replacement doesn't just get added
+    # alongside it (see generate_recommendation).
+    replaced_existing_labels: list[str] = field(default_factory=list)
 
 
 def _style_match_score(item_styles: list[str], preferred_style: str, detected_style: str) -> float:
@@ -108,6 +115,7 @@ def _score_candidate(
     currency: str,
     principles: list,
     action: str = "add",
+    replacing_labels: list[str] | None = None,
 ) -> ScoredItem:
     style_match = _style_match_score(candidate.style_tags, preferred_style, detected_style)
     color_match = color_match_score(preferred_colors, candidate.color)
@@ -128,6 +136,15 @@ def _score_candidate(
     )
     if action == "keep":
         rationale = "Kept per your feedback. " + rationale
+    elif action == "replace":
+        # No per-item style/color data exists for existing (detected) furniture —
+        # only a room-level detected style — so this is a room-level mismatch
+        # signal, not a claim about the specific existing piece's own style.
+        existing = ", ".join(replacing_labels or []) or "your existing item"
+        rationale = (
+            f"Your current {existing} doesn't match your preferred {preferred_style} style "
+            f"(the room was detected as {detected_style} overall). " + rationale
+        )
 
     return ScoredItem(
         catalog_item=candidate, category=category,
@@ -137,6 +154,7 @@ def _score_candidate(
             "principle_citations": [p.code for p in principles],
         },
         total_score=total_score, rationale=rationale, category_budget=category_budget, action=action,
+        replaces_labels=list(replacing_labels or []) if action == "replace" else [],
     )
 
 
@@ -161,12 +179,33 @@ def generate_recommendation(
     forced_keep_ids = list(forced_keep_ids or [])
 
     existing_labels = [f.label for f in room.existing_furniture]
-    categories = needed_categories(room.room_type, existing_labels, drop_lowest_priority_categories)
+    covered = categorize_existing(room.room_type, existing_labels)
+    needed = [category for category, matches in covered.items() if not matches]
+    if drop_lowest_priority_categories > 0:
+        needed = needed[: max(0, len(needed) - drop_lowest_priority_categories)]
+
+    # No per-item style/color data exists for existing (detected) furniture —
+    # only a room-level detected style — so a covered category is only
+    # flagged for a possible replacement when the room's overall detected
+    # style doesn't match what the user actually wants. User-confirmed items
+    # (the one path where a user deliberately placed a real piece — see
+    # RoomModel.FurnitureItem.user_confirmed) are never replace-eligible:
+    # confirming its geometry is a deliberate act of keeping it, not
+    # something a coarse room-level style signal should override.
+    confirmed_labels = {f.label for f in room.existing_furniture if f.user_confirmed}
+    style_mismatch = bool(preferred_style) and preferred_style != detected_style
+    mismatched = {
+        c: matches for c, matches in covered.items()
+        if matches and style_mismatch and c not in needed and not any(label in confirmed_labels for label in matches)
+    }
+
+    categories = needed + list(mismatched.keys())
     category_budgets = allocate_budget(budget, categories)
 
     free_area_cm2 = room.area_cm2 * (room.free_space_ratio if room.free_space_ratio is not None else DEFAULT_FREE_SPACE_RATIO)
 
     scored_items: list[ScoredItem] = []
+    replaced_existing_labels: list[str] = []
     for category in categories:
         category_budget = category_budgets[category]
         candidates = db.execute(
@@ -177,6 +216,7 @@ def generate_recommendation(
         if not candidates:
             continue
 
+        action = "replace" if category in mismatched else "add"
         principles = _retrieve_category_principles(db, room, category, preferred_style)
         best: ScoredItem | None = None
         for candidate in candidates:
@@ -184,12 +224,14 @@ def generate_recommendation(
                 db, candidate, category=category, category_budget=category_budget, room=room,
                 preferred_style=preferred_style, detected_style=detected_style,
                 preferred_colors=preferred_colors, free_area_cm2=free_area_cm2, currency=currency,
-                principles=principles,
+                principles=principles, action=action, replacing_labels=mismatched.get(category),
             )
             if best is None or scored.total_score > best.total_score:
                 best = scored
         if best is not None:
             scored_items.append(best)
+            if action == "replace":
+                replaced_existing_labels.extend(mismatched[category])
 
     # D024 feedback loop: honor explicit "keep" requests even if the item
     # wouldn't have won its category on score alone, or belongs to a
@@ -209,6 +251,10 @@ def generate_recommendation(
         existing_same_category = next((i for i in scored_items if i.category == kept_candidate.category), None)
         if existing_same_category is not None:
             scored_items.remove(existing_same_category)
+            if existing_same_category.action == "replace":
+                for label in mismatched.get(kept_candidate.category, []):
+                    if label in replaced_existing_labels:
+                        replaced_existing_labels.remove(label)
         scored_items.append(kept_scored)
 
     total_cost = sum(float(i.catalog_item.price) for i in scored_items)
@@ -223,4 +269,5 @@ def generate_recommendation(
         budget=budget,
         within_budget=total_cost <= budget,
         palette=palette,
+        replaced_existing_labels=replaced_existing_labels,
     )
